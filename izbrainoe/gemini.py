@@ -92,8 +92,10 @@ class Gemini:
     @staticmethod
     def api_error(status):
         if status in (400,401,403):return GeminiError('Google отклонил запрос. Проверь ключ, доступ к Gemini API и доступность сервиса для аккаунта.','access_denied')
+        if status==402:return GeminiError('Google просит пополнить баланс Gemini API в AI Studio. Лимит в настройках бота не пополняет этот баланс.','payment_required')
         if status==404:return GeminiError('Gemini 3.8 Flash недоступна этому проекту.','model_unavailable')
         if status==429:return GeminiError('Лимит Google исчерпан. Проверь квоту и платёжный статус проекта.','quota')
+        if status==503:return GeminiError('Gemini перегружена на стороне Google (503). Это не ошибка ключа. Пока использован локальный анализ.','overloaded')
         return GeminiError('Gemini временно недоступна. Материал разобран локально.')
     async def check_key(self,key):
         try:
@@ -130,8 +132,9 @@ class Gemini:
                 key=self.usage.reserve(item['user_id'],input_tokens,self.config.ai_monthly_limit_usd,len(visuals))
                 response=await c.post(API+'/models/'+MODEL+':generateContent',headers=headers,json=request)
                 if not response.is_success:
-                    if response.status_code<500:self.usage.reject(key)
-                    else:self.usage.unknown(key)
+                    # Google does not bill failed generation responses. Only a lost
+                    # response/transport timeout retains an uncertain reservation.
+                    self.usage.reject(key)
                     raise self.api_error(response.status_code)
                 data=response.json();usage=self.usage.complete(key,data.get('usageMetadata'))
             candidates=data.get('candidates') or []

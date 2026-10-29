@@ -177,3 +177,13 @@ def test_disabling_during_preflight_prevents_generation(tmp_path,monkeypatch):
     with pytest.raises(GeminiError,match='отключена'):
         asyncio.run(g.analyse({'user_id':101,'kind':'note'},{},'Classify',{}))
     assert len(calls)==1 and g.usage.summary()['requests']==0
+
+def test_overload_is_separate_from_billing_and_releases_reservation(tmp_path,monkeypatch):
+    cfg,s,g=setup(tmp_path)
+    async def post(self,url,**kw):
+        return httpx.Response(200,json={'totalTokens':4000}) if url.endswith(':countTokens') else httpx.Response(503,json={'error':{'status':'UNAVAILABLE'}})
+    monkeypatch.setattr(httpx.AsyncClient,'post',post)
+    with pytest.raises(GeminiError) as err:asyncio.run(g.analyse({'user_id':101,'kind':'note'},{},'Classify',{}))
+    assert err.value.code=='overloaded' and '503' in str(err.value)
+    assert g.usage.summary()['reserved_usd']==0 and g.usage.summary()['estimated_usd']==0
+    assert Gemini.api_error(402).code=='payment_required'
