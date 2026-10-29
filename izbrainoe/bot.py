@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import re
 import secrets
+import time
 from pathlib import Path
 import httpx
 from .processing import sensitive,delete_intent
@@ -13,14 +14,17 @@ class Bot:
         self.config=config; self.store=store; self.processor=processor
         self.client=httpx.AsyncClient(timeout=45)
         self.running=False; self.error=''; self.tasks=set()
-        self.batch_users=set();self.batch_saved={}
+        self.batch_users=set();self.batch_saved={};self.clear_locks={}
 
     async def call(self, method, **data):
         try:
             r=await self.client.post(f'https://api.telegram.org/bot{self.config.token}/{method}',json=data)
             payload=r.json()
             if not payload.get('ok'): raise TelegramError(payload.get('description','Ошибка Telegram'))
-            return payload['result']
+            result=payload['result']
+            if method.startswith('send') and isinstance(data.get('chat_id'),int):
+                for message in result if isinstance(result,list) else [result]:self.store.record_outgoing(data['chat_id'],message)
+            return result
         except httpx.HTTPError:
             # httpx exception strings contain the token-bearing URL. Never log them.
             raise TelegramError('Нет соединения с Telegram') from None
@@ -38,7 +42,42 @@ class Bot:
                 'type':'web_app','text':'Подборки','web_app':{'url':self.config.public_url}})
 
     async def send(self, uid, text, markup=None, **kw):
-        return await self.call('sendMessage',chat_id=uid,text=text[:4000],reply_markup=markup or self.keyboard(),**kw)
+        result=await self.call('sendMessage',chat_id=uid,text=text[:4000],reply_markup=markup or self.keyboard(),**kw)
+        self.store.record_outgoing(uid,result)
+        return result
+
+    async def clear_chat(self,uid):
+        async with self.clear_locks.setdefault(uid,asyncio.Lock()):
+            rows=self.store.outgoing(uid);cutoff=time.time()-48*3600
+            recent=[r['message_id'] for r in rows if not r['created'] or r['created']>cutoff]
+            expired=len(rows)-len(recent);processed=failed=0
+            for start in range(0,len(recent),100):
+                batch=recent[start:start+100]
+                try:
+                    await self.call('deleteMessages',chat_id=uid,message_ids=batch)
+                    self.store.forget_outgoing(uid,batch);processed+=len(batch)
+                except TelegramError:
+                    # One undeletable legacy message must not block the rest of the batch.
+                    for mid in batch:
+                        try:
+                            await self.call('deleteMessage',chat_id=uid,message_id=mid)
+                            self.store.forget_outgoing(uid,[mid]);processed+=1
+                        except TelegramError as e:
+                            if 'not found' in str(e).lower():self.store.forget_outgoing(uid,[mid]);processed+=1
+                            else:failed+=1
+            self.store.mode(uid,'')
+            summary='Очистка ответов бота выполнена. Твои сообщения и сохранённые материалы остались.'
+            if expired or failed:summary+='\nЧасть сообщений не удалена: Telegram ограничивает удаление 48 часами или временно отклонил запрос.'
+            summary+='\nСтарые ответы, не учтённые прежней версией, могут остаться. Это уведомление исчезнет через 8 секунд.'
+            result=await self.send(uid,summary)
+            async def hide_notice():
+                await asyncio.sleep(8)
+                try:
+                    await self.call('deleteMessage',chat_id=uid,message_id=result['message_id'])
+                    self.store.forget_outgoing(uid,[result['message_id']])
+                except (TelegramError,KeyError):pass
+            task=asyncio.create_task(hide_notice());self.tasks.add(task);task.add_done_callback(self.tasks.discard)
+            return {'processed':processed,'expired':expired,'failed':failed}
 
     async def results(self, uid, query, offset=0):
         data=await self.processor.search(uid,query,offset=offset,limit=4)
@@ -82,6 +121,7 @@ class Bot:
             methods={'photo':('sendPhoto','photo'),'voice':('sendVoice','voice'),'audio':('sendAudio','audio')}
             method,param=methods.get(item['kind'],('sendDocument','document'))
             result=await self.call(method,chat_id=uid,**{param:item['tg_file_id']})
+            self.store.record_outgoing(uid,result)
             self.store.link_message(uid,result['message_id'],item_id)
             return result
         if item['path']:
@@ -89,6 +129,7 @@ class Bot:
                 with open(item['path'],'rb') as f:
                     r=await self.client.post(f'https://api.telegram.org/bot{self.config.token}/sendDocument',data={'chat_id':str(uid)},files={'document':(item['filename'],f,'application/octet-stream')})
                 if not r.json().get('ok'): raise TelegramError('Не удалось отправить файл')
+                self.store.record_outgoing(uid,r.json()['result'])
                 self.store.link_message(uid,r.json()['result']['message_id'],item_id)
                 return
             except httpx.HTTPError: raise TelegramError('Не удалось отправить файл') from None
@@ -123,6 +164,8 @@ class Bot:
             if text.startswith('/start'):
                 await self.call('sendMessage',chat_id=uid,text='Изbrainое пока в закрытом тесте. Нужна личная ссылка-приглашение от владельца.')
             return
+        if not edited and not m.get('forward_origin') and re.fullmatch(r'/clear(?:@'+re.escape(self.config.bot_username)+r')?\s*',text,re.I):
+            await self.clear_chat(uid);return
         if edited:
             old=self.store.find_message(uid,m['message_id'])
             if old and not sensitive(text):
@@ -131,7 +174,7 @@ class Bot:
             return
         if text in ('/start','/help'):
             await self.configure_menu(uid)
-            await self.send(uid,'Пересылай сообщения, фото, PDF и голосовые. Я сохраню их.\n\n«Найди…» — поиск. Ответ на сохранённое сообщение — добавить контекст. Пояснения помогают пересматривать и похожие материалы.\n\nНапиши «удалить» в пояснении или ответом на нужный материал — запись попадёт в корзину. Восстановить можно в настройках. /cancel — отменить ввод.\n\nДля анализа PDF читаются первые 4 страницы, включая сканы. Пароли добавляй в защищённом разделе подборок.',self.web_button() or self.keyboard())
+            await self.send(uid,'Пересылай сообщения, фото, PDF и голосовые. Я сохраню их.\n\n«Найди…» — поиск. Ответ на сохранённое сообщение — добавить контекст. Пояснения помогают пересматривать и похожие материалы.\n\nНапиши «удалить» в пояснении или ответом на нужный материал — запись попадёт в корзину. Восстановить можно в настройках. /cancel — отменить ввод.\n\n/clear — убрать известные ответы бота за последние 48 часов. Твои сообщения и архив сохранятся. Старые неучтённые ответы могут остаться.\n\nДля анализа PDF читаются первые 4 страницы, включая сканы. Пароли добавляй в защищённом разделе подборок.',self.web_button() or self.keyboard())
             return
         if text=='/cancel':
             self.store.mode(uid,''); await self.send(uid,'Отменено. Следующее сообщение сохраню как заметку.'); return
@@ -176,7 +219,6 @@ class Bot:
             item=self.store.get(uid,context_item)
             if item:
                 if delete_intent(text):
-                    import time
                     self.store.update(uid,context_item,deleted=time.time())
                     self.store.mode(uid,'')
                     await self.send(uid,'Запись перемещена в корзину. Восстановить можно в «Настройки → Корзина».');return
@@ -237,7 +279,7 @@ class Bot:
             webhook=await self.call('getWebhookInfo')
             if webhook.get('url'):
                 self.error='У бота уже настроен webhook. Отключите его перед локальным запуском.'; return
-            await self.call('setMyCommands',commands=[{'command':'start','description':'Начать'},{'command':'help','description':'Как пользоваться'},{'command':'cancel','description':'Отменить ввод'}])
+            await self.call('setMyCommands',commands=[{'command':'start','description':'Начать'},{'command':'help','description':'Как пользоваться'},{'command':'clear','description':'Убрать ответы бота, сохранить архив'},{'command':'cancel','description':'Отменить ввод'}])
             if self.config.public_url:
                 await self.call('setChatMenuButton',menu_button={'type':'web_app','text':'Подборки','web_app':{'url':self.config.public_url}})
                 with self.store.db() as c:
@@ -279,4 +321,8 @@ class Bot:
         finally:
             self.running=False
 
-    async def close(self): await self.client.aclose()
+    async def close(self):
+        tasks=list(self.tasks)
+        for t in tasks:t.cancel()
+        if tasks:await asyncio.gather(*tasks,return_exceptions=True)
+        await self.client.aclose()

@@ -167,3 +167,21 @@ def test_model_quote_does_not_justify_invented_contract(tmp_path,monkeypatch):
         assert r['groups']==['Вуз']
         assert r['analysis']['document_type']=='' and r['analysis']['subject']==''
     asyncio.run(run())
+
+def test_essay_about_lectures_is_still_essay():
+    from izbrainoe.knowledge import grounded_features,canonical_groups
+    text='Почему важно говорить выразительно? Авторская позиция ясна: культура речи необходима. Два примера-аргумента показывают, как скучными лекциями можно убить интерес к науке. Таким образом, слово влияет на людей.'
+    assert grounded_features(text)[0]=='сочинение'
+    assert canonical_groups('лекция','',[],[])==['Лекции']
+    assert grounded_features('| Темп |: 120. | Куплет |: Am Dm G C. Текст песни.')[0]=='песня'
+    assert grounded_features('Example_v1.apk')[0]=='приложение'
+
+def test_timetable_from_ocr_structure_without_complete_title():
+    from izbrainoe.knowledge import grounded_features,canonical_groups,looks_like_schedule
+    subjects='Для обучающихся очно-заочной формы обуч\n10-А\nкаб\n1\n2\n3\n4\nИстория\nОбществознание\nАнглийский язык / Геометрия\nАлгебра\nРусский язык\nNº 14\nNº 14\nNº 25'
+    bells='списание звонков и перемен очно-заочная форма\nУрок\n1 урок\n2 урок\nНачало урока\n14.10\n15.00\n15.50\nОкончание урока\n14.50\n15.40\n16.30\nПеремена\n10 минут'
+    for text in (subjects,bells):
+        kind,subject=grounded_features(text)
+        assert (kind,subject)==('расписание','')
+        assert canonical_groups(kind,subject,[],[])==['Расписание']
+    assert not looks_like_schedule('Очно-заочное обучение. Вступительные предметы: русский язык, математика, обществознание.')

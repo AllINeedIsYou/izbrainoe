@@ -41,10 +41,16 @@ class Store:
               groups_json TEXT NOT NULL,analysis_json TEXT NOT NULL,embedding TEXT,model TEXT NOT NULL,updated REAL,
               PRIMARY KEY(user_id,item_id));
             CREATE TABLE IF NOT EXISTS web_cache(query TEXT PRIMARY KEY,result TEXT NOT NULL,created REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS outgoing_messages(user_id INTEGER NOT NULL,message_id INTEGER NOT NULL,created REAL NOT NULL,
+              PRIMARY KEY(user_id,message_id));
             ''')
             columns={r[1] for r in c.execute('PRAGMA table_info(items)')}
             for name,definition in {'analysis_json':"TEXT NOT NULL DEFAULT '{}'",'analysis_state':"TEXT NOT NULL DEFAULT 'pending'",'original_caption':"TEXT NOT NULL DEFAULT ''"}.items():
                 if name not in columns:c.execute(f'ALTER TABLE items ADD COLUMN {name} {definition}')
+            if not c.execute("SELECT 1 FROM meta WHERE key='outgoing_backfill_v1'").fetchone():
+                c.execute('INSERT OR IGNORE INTO outgoing_messages SELECT user_id,bot_message,created FROM items WHERE user_id>0 AND bot_message IS NOT NULL')
+                c.execute('INSERT OR IGNORE INTO outgoing_messages SELECT user_id,message_id,0 FROM message_links WHERE user_id>0')
+                c.execute("INSERT INTO meta VALUES('outgoing_backfill_v1','1')")
         os.chmod(self.path, 0o600)
         if not self.meta('local_key'):
             self.meta('local_key', secrets.token_urlsafe(32))
@@ -208,3 +214,17 @@ class Store:
     def learning_state(self, uid, value=None):
         if value is not None:self.meta(f'learning_{uid}',json.dumps(value,ensure_ascii=False))
         return json.loads(self.meta(f'learning_{uid}') or '{}')
+
+    def record_outgoing(self,uid,message):
+        if not isinstance(message,dict):return
+        mid=message.get('message_id')
+        if not isinstance(uid,int) or uid<=0 or not isinstance(mid,int) or isinstance(mid,bool):return
+        with self.db() as c:
+            c.execute('INSERT OR IGNORE INTO outgoing_messages VALUES(?,?,?)',(uid,mid,message.get('date') or time.time()))
+
+    def outgoing(self,uid):
+        with self.db() as c:
+            return [dict(r) for r in c.execute('SELECT message_id,created FROM outgoing_messages WHERE user_id=? ORDER BY message_id',(uid,))]
+
+    def forget_outgoing(self,uid,mids):
+        with self.db() as c:c.executemany('DELETE FROM outgoing_messages WHERE user_id=? AND message_id=?',[(uid,m) for m in mids])

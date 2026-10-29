@@ -6,6 +6,7 @@ import threading
 import time
 import webbrowser
 import re
+import fcntl
 from pathlib import Path
 import httpx
 import uvicorn
@@ -18,6 +19,16 @@ def main():
     engine=None
     tunnel=None
     (ROOT/'data').mkdir(exist_ok=True,mode=0o700)
+    instance=(ROOT/'data'/'server.lock').open('w')
+    try:fcntl.flock(instance,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    except BlockingIOError:
+        print('Изbrainое уже запущено. Второй экземпляр не нужен.')
+        if not os.getenv('IZ_NO_BROWSER'):
+            from izbrainoe.store import Store
+            store=Store(config.data_dir)
+            webbrowser.open(f'http://127.0.0.1:{config.port}/local?key={store.meta("local_key")}')
+        return
+    (ROOT/'data'/'server.pid').write_text(str(os.getpid()))
     binary=ROOT/'runtime'/'ollama'/'ollama'
     if binary.exists() and config.ollama_url:
         try: ready=httpx.get(config.ollama_url+'/api/tags',timeout=2).status_code==200
