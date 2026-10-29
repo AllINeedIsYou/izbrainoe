@@ -34,6 +34,8 @@ class Config:
     gemini_key: str = field(default='',repr=False)
     gemini_model: str = 'gemini-3.8-flash'
     ai_monthly_limit_usd: float = 5.0
+    provod_key: str = field(default='',repr=False)
+    provod_monthly_limit_rub: float = 1000.0
 
     def save_ai(self):
         path=self.data_dir/'ai-settings.json'
@@ -42,7 +44,8 @@ class Config:
         fd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
         try:
             with os.fdopen(fd,'w') as out:json.dump({'provider':self.ai_provider,'gemini_key':self.gemini_key,
-                'gemini_model':self.gemini_model,'monthly_limit_usd':self.ai_monthly_limit_usd},out)
+                'gemini_model':self.gemini_model,'monthly_limit_usd':self.ai_monthly_limit_usd,
+                'provod_key':self.provod_key,'provod_monthly_limit_rub':self.provod_monthly_limit_rub},out)
             os.replace(temporary,path)
         finally:temporary.unlink(missing_ok=True)
 
@@ -70,4 +73,6 @@ class Config:
                    ai_provider=ai.get('provider',os.getenv('AI_PROVIDER','local')),
                    gemini_key=ai.get('gemini_key',os.getenv('GEMINI_API_KEY','')),
                    gemini_model=ai.get('gemini_model','gemini-3.8-flash'),
-                   ai_monthly_limit_usd=float(ai.get('monthly_limit_usd',os.getenv('AI_MONTHLY_LIMIT_USD','5'))))
+                   ai_monthly_limit_usd=float(ai.get('monthly_limit_usd',os.getenv('AI_MONTHLY_LIMIT_USD','5'))),
+                   provod_key=ai.get('provod_key',''),
+                   provod_monthly_limit_rub=float(ai.get('provod_monthly_limit_rub',1000)))

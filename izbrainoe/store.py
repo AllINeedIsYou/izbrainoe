@@ -46,6 +46,9 @@ class Store:
             CREATE TABLE IF NOT EXISTS ai_usage(id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,month TEXT NOT NULL,created REAL NOT NULL,
               model TEXT NOT NULL,status TEXT NOT NULL,input_tokens INTEGER NOT NULL DEFAULT 0,output_tokens INTEGER NOT NULL DEFAULT 0,
               cost_usd REAL NOT NULL DEFAULT 0,reserved_usd REAL NOT NULL DEFAULT 0,images INTEGER NOT NULL DEFAULT 0);
+            CREATE TABLE IF NOT EXISTS provod_usage(id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,month TEXT NOT NULL,created REAL NOT NULL,
+              model TEXT NOT NULL,status TEXT NOT NULL,input_tokens INTEGER NOT NULL DEFAULT 0,output_tokens INTEGER NOT NULL DEFAULT 0,
+              cost_rub REAL NOT NULL DEFAULT 0,reserved_rub REAL NOT NULL DEFAULT 0,images INTEGER NOT NULL DEFAULT 0);
             ''')
             columns={r[1] for r in c.execute('PRAGMA table_info(items)')}
             for name,definition in {'analysis_json':"TEXT NOT NULL DEFAULT '{}'",'analysis_state':"TEXT NOT NULL DEFAULT 'pending'",'original_caption':"TEXT NOT NULL DEFAULT ''"}.items():

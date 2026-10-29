@@ -37,6 +37,10 @@ class GeminiSettings(BaseModel):
     key: SecretStr = SecretStr('')
     monthly_limit_usd: float = Field(default=5,ge=.01,le=1000,allow_inf_nan=False)
 
+class ProvodSettings(BaseModel):
+    key: SecretStr = SecretStr('')
+    monthly_limit_rub: float = Field(default=1000,ge=1,le=100000,allow_inf_nan=False)
+
 def create_app(config=None):
     config=config or Config.load()
     store=Store(config.data_dir); processor=Processor(config,store); bot=Bot(config,store,processor)
@@ -132,8 +136,9 @@ def create_app(config=None):
                 'voice_ready':processor.voice_ready(),'paired':bool(owner),
                 'memory_examples':len(store.memories(uid)),'learning':store.learning_state(uid),
                 'web_lookup':config.web_lookup,'pdf_pages':config.pdf_pages,'max_upload_mb':config.max_upload_mb,
-                'analysis_provider':config.ai_provider,'analysis_model':config.gemini_model if config.ai_provider=='gemini' else config.chat_model,
+                'analysis_provider':config.ai_provider,'analysis_model':config.gemini_model if config.ai_provider in ('gemini','provod') else config.chat_model,
                 'gemini':processor.analyzer.gemini.status() if local_session(request) else None,
+                'provod':processor.analyzer.provod.status() if local_session(request) else None,
                 'pair_link':f'https://t.me/{config.bot_username}?start={store.meta("pair_code")}' if local_session(request) and not owner else None}
 
     @app.post('/api/ai/gemini')
@@ -151,8 +156,20 @@ def create_app(config=None):
     @app.post('/api/ai/local')
     async def disconnect_gemini(request:Request,uid=Depends(user)):
         if not local_session(request):raise HTTPException(403,'Переключить обработку можно в локальных настройках на Mac.')
-        config.ai_provider='local';config.save_ai();processor.analyzer.gemini.error=''
+        config.ai_provider='local';config.save_ai();processor.analyzer.gemini.error='';processor.analyzer.provod.error=''
         return {'ok':True}
+
+    @app.post('/api/ai/provod')
+    async def connect_provod(request:Request,body:ProvodSettings,uid=Depends(user)):
+        if not local_session(request):raise HTTPException(403,'Ключ Provod вводится только в локальных настройках на Mac.')
+        key=body.key.get_secret_value().strip() or config.provod_key
+        if not 20<=len(key)<=250 or any(ord(c)<33 or ord(c)>126 for c in key):
+            raise HTTPException(400,'Вставь обычный API-ключ Provod.')
+        try:await processor.analyzer.provod.check_key(key)
+        except GeminiError as e:raise HTTPException(400,str(e))
+        config.provod_key=key;config.gemini_model=MODEL;config.provod_monthly_limit_rub=body.monthly_limit_rub
+        config.ai_provider='provod';config.save_ai();processor.analyzer.provod.error=''
+        return {'ok':True,'message':'Gemini через Provod включена для следующих разборов.','provod':processor.analyzer.provod.status()}
 
     @app.get('/api/items')
     async def items(q:str='',group:str='',kind:str='',offset:int=0,limit:int=40,trash:bool=False,uid=Depends(user)):
