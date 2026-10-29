@@ -3,6 +3,7 @@ import hashlib
 import re
 import secrets
 import time
+import json
 from pathlib import Path
 import httpx
 from .processing import sensitive,delete_intent
@@ -46,6 +47,14 @@ class Bot:
         self.store.record_outgoing(uid,result)
         return result
 
+    def observe_own_message(self,uid,message):
+        if not isinstance(message,dict):return
+        sender=message.get('from') or {}
+        chat=(message.get('chat') or {}).get('id',uid)
+        prefix=self.config.token.split(':',1)[0]
+        own=(sender.get('id')==int(prefix)) if prefix.isdigit() else sender.get('username','').lower()==self.config.bot_username.lower()
+        if sender.get('is_bot') and own and chat==uid:self.store.record_outgoing(uid,message)
+
     async def clear_chat(self,uid):
         async with self.clear_locks.setdefault(uid,asyncio.Lock()):
             rows=self.store.outgoing(uid);cutoff=time.time()-48*3600
@@ -66,9 +75,12 @@ class Bot:
                             if 'not found' in str(e).lower():self.store.forget_outgoing(uid,[mid]);processed+=1
                             else:failed+=1
             self.store.mode(uid,'')
-            summary='Очистка ответов бота выполнена. Твои сообщения и сохранённые материалы остались.'
-            if expired or failed:summary+='\nЧасть сообщений не удалена: Telegram ограничивает удаление 48 часами или временно отклонил запрос.'
-            summary+='\nСтарые ответы, не учтённые прежней версией, могут остаться. Это уведомление исчезнет через 8 секунд.'
+            self.store.meta(f'last_clear_{uid}',json.dumps({'requested_at':time.time(),'processed':processed,'expired':expired,'failed':failed}))
+            summary=f'Обработано известных ответов бота: {processed}.' if processed else 'В учёте нет ответов бота, которые удалось удалить.'
+            summary+=' Твои сообщения и сохранённые материалы остались.'
+            if expired:summary+=f'\nСтарше 48 часов: {expired}.'
+            if failed:summary+=f'\nTelegram не дал удалить: {failed}. Попробуй позже.'
+            summary+='\nСтарые ответы, которые прежняя версия не учитывала, могут остаться. Ответь на такой ответ командой /clear, чтобы убрать его. Уведомление исчезнет через 8 секунд.'
             result=await self.send(uid,summary)
             async def hide_notice():
                 await asyncio.sleep(8)
@@ -141,6 +153,7 @@ class Bot:
         if not self.store.allowed(uid,self.config.allowed_ids):
             await self.call('answerCallbackQuery',callback_query_id=q['id'],text='Нет доступа')
             return
+        self.observe_own_message(uid,q.get('message'))
         data=q.get('data',''); action,_,value=data.partition(':')
         await self.call('answerCallbackQuery',callback_query_id=q['id'])
         if action=='get': await self.send_original(uid,value)
@@ -164,6 +177,7 @@ class Bot:
             if text.startswith('/start'):
                 await self.call('sendMessage',chat_id=uid,text='Изbrainое пока в закрытом тесте. Нужна личная ссылка-приглашение от владельца.')
             return
+        self.observe_own_message(uid,m.get('reply_to_message'))
         if not edited and not m.get('forward_origin') and re.fullmatch(r'/clear(?:@'+re.escape(self.config.bot_username)+r')?\s*',text,re.I):
             await self.clear_chat(uid);return
         if edited:

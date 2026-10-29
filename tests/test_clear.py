@@ -86,3 +86,30 @@ def test_clear_notification_disappears(tmp_path,monkeypatch):
         assert not s.outgoing(101)
         await b.close()
     asyncio.run(run())
+
+def test_clear_reply_can_delete_untracked_legacy_bot_answer(tmp_path):
+    async def run():
+        cfg=Config(data_dir=tmp_path,allowed_ids=(101,),token='123:fake');s=Store(tmp_path);b=Bot(cfg,s,Processor(cfg,s));calls=[]
+        async def fake(method,**kw):calls.append((method,kw));return {'message_id':900} if method=='sendMessage' else True
+        b.call=fake
+        await b.message({'chat':{'type':'private'},'from':{'id':101},'message_id':71,'text':'/clear',
+                         'reply_to_message':{'message_id':70,'date':time.time()-3600,'from':{'id':123,'is_bot':True}}})
+        assert ('deleteMessages',{'chat_id':101,'message_ids':[70]}) in calls
+        import json
+        assert json.loads(s.meta('last_clear_101'))['processed']==1
+        await b.close()
+    asyncio.run(run())
+
+
+def test_clear_reply_does_not_delete_user_or_another_bots_message(tmp_path):
+    async def run():
+        cfg=Config(data_dir=tmp_path,allowed_ids=(101,),token='123:fake');s=Store(tmp_path);b=Bot(cfg,s,Processor(cfg,s));calls=[]
+        async def fake(method,**kw):calls.append((method,kw));return {'message_id':900} if method=='sendMessage' else True
+        b.call=fake
+        for sender in ({'id':101,'is_bot':False},{'id':124,'is_bot':True,'username':cfg.bot_username}):
+            b.observe_own_message(101,{'message_id':70,'from':sender})
+        await b.clear_chat(101)
+        assert not any(method=='deleteMessages' for method,kw in calls)
+        assert any('нет ответов' in kw.get('text','') for method,kw in calls)
+        await b.close()
+    asyncio.run(run())
