@@ -167,13 +167,20 @@ class Processor:
         analysis=await self.analyzer.analyse(item,proposed_groups(text),vs[0] if vs else None)
         groups=[g.strip() for g in analysis.get('groups',[]) if isinstance(g,str) and 1<len(g.strip())<=60 and not sensitive(g)]
         analysis['groups']=groups[:3]
+        extra='\n'.join([analysis.get('summary',''),analysis.get('document_type',''),analysis.get('subject',''),*analysis.get('topics',[]),*groups[:3]]).strip()
+        extra_vector=None
+        if extra and not sensitive(extra) and self.ai_ready:
+            try:extra_vector=(await self.embed([extra]))[0]
+            except Exception:pass
         current=self.store.get(uid,item_id,raw=True)
         if not current or current['updated']!=item['updated']:return
         unread_stub=bool(item['source_label'] and item['kind']=='document' and not item['path'])
+        understood_image=analysis.get('method')=='gemini' and analysis.get('cloud',{}).get('images',0)>0
         values={'analysis_json':json.dumps(analysis,ensure_ascii=False),
-                'analysis_state':'needs_original' if unread_stub or not (item['body'].strip() or item['context'].strip()) else 'ready'}
+                'analysis_state':'needs_original' if unread_stub or not (item['body'].strip() or item['context'].strip() or understood_image) else 'ready'}
         if not current['manual_groups']:values['groups_json']=json.dumps(groups[:3],ensure_ascii=False)
         self.store.update(uid,item_id,**values)
+        if extra and not sensitive(extra):self.store.add_chunk(uid,item_id,len(cs),extra,extra_vector,self.config.embed_model)
 
     async def feedback(self,uid,item_id):
         await self.index(uid,item_id)
@@ -294,8 +301,11 @@ class Processor:
         for row in self.store.search_chunks(uid): by_id.setdefault(row['item_id'],[]).append(row)
         ranked=[]
         for item in items:
-            text='\n'.join([item['title'],item['context'],item['body'],' '.join(item['groups'])])
-            if numbers and not numbers.issubset(set(re.findall(r'\b\d+\b',text))): continue
+            a=item.get('analysis',{})
+            text='\n'.join([item['title'],item['context'],item['body'],' '.join(item['groups']),a.get('summary',''),' '.join(a.get('topics',[]))])
+            number_source='\n'.join([item['title'],item['context'],item['body']])
+            if not item['body'] and a.get('cloud',{}).get('images'):number_source+='\n'+'\n'.join(a.get('evidence',[]))
+            if numbers and not numbers.issubset(set(re.findall(r'\b\d+\b',number_source))): continue
             ts=set(tokens(text)); overlap=len(qwords&ts)/max(1,len(qwords))
             exact=q in text.lower()
             score=overlap*3 + (3 if exact else 0)
@@ -307,7 +317,7 @@ class Processor:
             if overlap==0 and not exact and sim<0.38: continue
             score+=sim*2
             # Prefer a fragment containing the literal search term when available.
-            body=item['body'] or item['context'] or item['title']
+            body=item['body'] or item['context'] or a.get('summary') or item['title']
             hit=next((m.start() for m in re.finditer(re.escape(next(iter(qwords),q)),body.lower())),0)
             if sim>0.38 and overlap==0: body=best; hit=0
             item['snippet']=body[max(0,hit-70):hit+240]

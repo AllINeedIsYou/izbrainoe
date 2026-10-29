@@ -43,6 +43,9 @@ class Store:
             CREATE TABLE IF NOT EXISTS web_cache(query TEXT PRIMARY KEY,result TEXT NOT NULL,created REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS outgoing_messages(user_id INTEGER NOT NULL,message_id INTEGER NOT NULL,created REAL NOT NULL,
               PRIMARY KEY(user_id,message_id));
+            CREATE TABLE IF NOT EXISTS ai_usage(id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,month TEXT NOT NULL,created REAL NOT NULL,
+              model TEXT NOT NULL,status TEXT NOT NULL,input_tokens INTEGER NOT NULL DEFAULT 0,output_tokens INTEGER NOT NULL DEFAULT 0,
+              cost_usd REAL NOT NULL DEFAULT 0,reserved_usd REAL NOT NULL DEFAULT 0,images INTEGER NOT NULL DEFAULT 0);
             ''')
             columns={r[1] for r in c.execute('PRAGMA table_info(items)')}
             for name,definition in {'analysis_json':"TEXT NOT NULL DEFAULT '{}'",'analysis_state':"TEXT NOT NULL DEFAULT 'pending'",'original_caption':"TEXT NOT NULL DEFAULT ''"}.items():
@@ -174,6 +177,10 @@ class Store:
     def search_chunks(self, uid, model=''):
         with self.db() as c:
             return [dict(r) for r in c.execute('SELECT chunks.* FROM chunks JOIN items ON items.id=chunks.item_id WHERE chunks.user_id=? AND items.deleted IS NULL',(uid,))]
+
+    def add_chunk(self,uid,item_id,n,text,vector=None,model=''):
+        with self.db() as c:
+            c.execute('INSERT OR REPLACE INTO chunks VALUES(?,?,?,?,?,?)',(item_id,uid,n,text,json.dumps(vector) if vector else None,model if vector else ''))
 
     def duplicate(self, uid, digest):
         if not digest: return None

@@ -60,7 +60,7 @@ def main():
     if not shutil.which('swiftc') or not shutil.which('clang'):
         raise SystemExit('Сначала установите Apple Command Line Tools: xcode-select --install')
     RUNTIME.mkdir(exist_ok=True);scratch=RUNTIME/'.setup';scratch.mkdir(exist_ok=True)
-    if not (RUNTIME/'ocr').exists():
+    if not (RUNTIME/'ocr').exists() or (ROOT/'scripts/ocr.swift').stat().st_mtime>(RUNTIME/'ocr').stat().st_mtime:
         print('Собираю распознавание текста Apple Vision…',flush=True)
         subprocess.run(['swiftc','-O',str(ROOT/'scripts/ocr.swift'),'-o',str(RUNTIME/'ocr')],check=True)
     if not (RUNTIME/'ollama/ollama').exists():

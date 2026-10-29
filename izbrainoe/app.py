@@ -11,7 +11,8 @@ from urllib.parse import urlparse
 from fastapi import FastAPI, Request, HTTPException, UploadFile, File, Form, Depends
 from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field,SecretStr
+from .gemini import GeminiError,MODEL
 from .config import Config, ROOT
 from .store import Store
 from .processing import Processor, sensitive,delete_intent
@@ -31,6 +32,10 @@ class Change(BaseModel):
 class VaultBody(BaseModel):
     version: int = Field(ge=0)
     envelope: dict
+
+class GeminiSettings(BaseModel):
+    key: SecretStr = SecretStr('')
+    monthly_limit_usd: float = Field(default=5,ge=.01,le=1000,allow_inf_nan=False)
 
 def create_app(config=None):
     config=config or Config.load()
@@ -127,7 +132,27 @@ def create_app(config=None):
                 'voice_ready':processor.voice_ready(),'paired':bool(owner),
                 'memory_examples':len(store.memories(uid)),'learning':store.learning_state(uid),
                 'web_lookup':config.web_lookup,'pdf_pages':config.pdf_pages,'max_upload_mb':config.max_upload_mb,
+                'analysis_provider':config.ai_provider,'analysis_model':config.gemini_model if config.ai_provider=='gemini' else config.chat_model,
+                'gemini':processor.analyzer.gemini.status() if local_session(request) else None,
                 'pair_link':f'https://t.me/{config.bot_username}?start={store.meta("pair_code")}' if local_session(request) and not owner else None}
+
+    @app.post('/api/ai/gemini')
+    async def connect_gemini(request:Request,body:GeminiSettings,uid=Depends(user)):
+        if not local_session(request):raise HTTPException(403,'Ключ Gemini вводится только в локальных настройках на Mac.')
+        key=body.key.get_secret_value().strip() or config.gemini_key
+        if not 20<=len(key)<=250 or any(ord(c)<33 or ord(c)>126 for c in key):
+            raise HTTPException(400,'Вставь API-ключ из Google AI Studio.')
+        try:await processor.analyzer.gemini.check_key(key)
+        except GeminiError as e:raise HTTPException(400,str(e))
+        config.gemini_key=key;config.gemini_model=MODEL;config.ai_monthly_limit_usd=body.monthly_limit_usd
+        config.ai_provider='gemini';config.save_ai();processor.analyzer.gemini.error=''
+        return {'ok':True,'message':'Ключ проверен. Gemini включена для следующих разборов. Старый архив автоматически не отправлялся.','gemini':processor.analyzer.gemini.status()}
+
+    @app.post('/api/ai/local')
+    async def disconnect_gemini(request:Request,uid=Depends(user)):
+        if not local_session(request):raise HTTPException(403,'Переключить обработку можно в локальных настройках на Mac.')
+        config.ai_provider='local';config.save_ai();processor.analyzer.gemini.error=''
+        return {'ok':True}
 
     @app.get('/api/items')
     async def items(q:str='',group:str='',kind:str='',offset:int=0,limit:int=40,trash:bool=False,uid=Depends(user)):
