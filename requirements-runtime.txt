@@ -1,0 +1,3 @@
+# Used once by scripts/setup_local.py, not by the server.
+cmake==4.1.0
+imageio-ffmpeg==0.6.0

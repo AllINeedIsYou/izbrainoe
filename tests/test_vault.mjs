@@ -1,0 +1,17 @@
+import assert from 'node:assert/strict';
+import {derive,encryptVault,decryptVault} from '../izbrainoe/static/vault.js';
+const fakePassword='test-only-never-a-real-password';
+const entries=[{id:'test',title:'Вымышленный сервис',login:'test@example.invalid',password:'FAKE_SECRET_FOR_TEST_ONLY'}];
+const salt=crypto.getRandomValues(new Uint8Array(16));
+const key=await derive(fakePassword,salt);
+assert.equal(key.extractable,false);
+const a=await encryptVault(key,salt,entries),b=await encryptVault(key,salt,entries);
+assert.notEqual(a.iv,b.iv);
+assert.notEqual(a.ciphertext,b.ciphertext);
+assert.ok(!JSON.stringify(a).includes(entries[0].password));
+assert.ok(!JSON.stringify(a).includes(entries[0].login));
+assert.deepEqual((await decryptVault(fakePassword,a)).entries,entries);
+await assert.rejects(decryptVault('wrong-test-password',a));
+const corrupted={...a,ciphertext:(a.ciphertext[0]==='A'?'B':'A')+a.ciphertext.slice(1)};
+await assert.rejects(decryptVault(fakePassword,corrupted));
+console.log('Шифрование: 8 проверок пройдено (ключ, IV, шифротекст, расшифровка, неверный пароль, повреждение).');

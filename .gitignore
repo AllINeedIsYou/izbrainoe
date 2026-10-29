@@ -1,0 +1,13 @@
+.env
+Настройки.env
+.venv/
+data/
+__pycache__/
+.pytest_cache/
+.DS_Store
+runtime/
+work/
+*.log
+*.sqlite3
+*.sqlite3-*
+*.pyc
