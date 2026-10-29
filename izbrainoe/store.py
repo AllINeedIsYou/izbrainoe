@@ -45,6 +45,8 @@ class Store:
               PRIMARY KEY(user_id,cache_key));
             CREATE TABLE IF NOT EXISTS outgoing_messages(user_id INTEGER NOT NULL,message_id INTEGER NOT NULL,created REAL NOT NULL,
               PRIMARY KEY(user_id,message_id));
+            CREATE TABLE IF NOT EXISTS service_messages(user_id INTEGER NOT NULL,message_id INTEGER NOT NULL,created REAL NOT NULL,
+              PRIMARY KEY(user_id,message_id));
             CREATE TABLE IF NOT EXISTS ai_usage(id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,month TEXT NOT NULL,created REAL NOT NULL,
               model TEXT NOT NULL,status TEXT NOT NULL,input_tokens INTEGER NOT NULL DEFAULT 0,output_tokens INTEGER NOT NULL DEFAULT 0,
               cost_usd REAL NOT NULL DEFAULT 0,reserved_usd REAL NOT NULL DEFAULT 0,images INTEGER NOT NULL DEFAULT 0);
@@ -240,3 +242,21 @@ class Store:
 
     def forget_outgoing(self,uid,mids):
         with self.db() as c:c.executemany('DELETE FROM outgoing_messages WHERE user_id=? AND message_id=?',[(uid,m) for m in mids])
+
+    def record_service(self,uid,message):
+        mid=message.get('message_id')
+        if not isinstance(uid,int) or uid<=0 or not isinstance(mid,int) or isinstance(mid,bool):return
+        with self.db() as c:
+            c.execute('INSERT OR IGNORE INTO service_messages VALUES(?,?,?)',(uid,mid,message.get('date') or time.time()))
+
+    def chat_messages(self,uid):
+        with self.db() as c:
+            return [dict(r) for r in c.execute('''SELECT message_id,MAX(created) AS created FROM (
+                SELECT message_id,created FROM outgoing_messages WHERE user_id=?
+                UNION ALL SELECT message_id,created FROM service_messages WHERE user_id=?)
+                GROUP BY message_id ORDER BY message_id''',(uid,uid))]
+
+    def forget_chat_messages(self,uid,mids):
+        with self.db() as c:
+            for table in ('outgoing_messages','service_messages'):
+                c.executemany(f'DELETE FROM {table} WHERE user_id=? AND message_id=?',[(uid,m) for m in mids])

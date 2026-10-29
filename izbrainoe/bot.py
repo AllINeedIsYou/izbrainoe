@@ -56,32 +56,51 @@ class Bot:
         own=(sender.get('id')==int(prefix)) if prefix.isdigit() else sender.get('username','').lower()==self.config.bot_username.lower()
         if sender.get('is_bot') and own and chat==uid:self.store.record_outgoing(uid,message)
 
+    def service_action(self,message):
+        """Only standalone controls; forwarded messages and media captions are material."""
+        if message.get('forward_origin') or message.get('forward_date') or message.get('is_automatic_forward'):return None
+        if any(k in message for k in ('photo','document','video','video_note','animation','voice','audio','sticker','contact','location','venue','poll','dice')):return None
+        text=message.get('text','').strip().replace('\ufe0f','')
+        match=re.fullmatch(r'/(start|help|cancel|clear)(?:@'+re.escape(self.config.bot_username)+r')?(?:\s+(.+))?',text,re.I|re.S)
+        if match:
+            action=match[1].lower()
+            return action if action=='start' or match[2] is None else None
+        if text in ('🗂 Подборки','📁 Подборки','📂 Подборки'):return 'collections'
+        if text in ('🔎 Найти','🔍 Найти'):return 'search'
+        return None
+
+    def observe_service_message(self,uid,message):
+        if not isinstance(message,dict):return
+        sender=message.get('from') or {};chat=message.get('chat') or {}
+        if sender.get('id')!=uid or sender.get('is_bot') or chat.get('id',uid)!=uid or chat.get('type','private')!='private':return
+        if self.service_action(message):self.store.record_service(uid,message)
+
     async def clear_chat(self,uid):
         async with self.clear_locks.setdefault(uid,asyncio.Lock()):
-            rows=self.store.outgoing(uid);cutoff=time.time()-48*3600
+            rows=self.store.chat_messages(uid);cutoff=time.time()-48*3600
             recent=[r['message_id'] for r in rows if not r['created'] or r['created']>cutoff]
             expired=len(rows)-len(recent);processed=failed=0
             for start in range(0,len(recent),100):
                 batch=recent[start:start+100]
                 try:
                     await self.call('deleteMessages',chat_id=uid,message_ids=batch)
-                    self.store.forget_outgoing(uid,batch);processed+=len(batch)
+                    self.store.forget_chat_messages(uid,batch);processed+=len(batch)
                 except TelegramError:
                     # One undeletable legacy message must not block the rest of the batch.
                     for mid in batch:
                         try:
                             await self.call('deleteMessage',chat_id=uid,message_id=mid)
-                            self.store.forget_outgoing(uid,[mid]);processed+=1
+                            self.store.forget_chat_messages(uid,[mid]);processed+=1
                         except TelegramError as e:
-                            if 'not found' in str(e).lower():self.store.forget_outgoing(uid,[mid]);processed+=1
+                            if 'not found' in str(e).lower():self.store.forget_chat_messages(uid,[mid]);processed+=1
                             else:failed+=1
             self.store.mode(uid,'')
             self.store.meta(f'last_clear_{uid}',json.dumps({'requested_at':time.time(),'processed':processed,'expired':expired,'failed':failed}))
-            summary=f'Обработано известных ответов бота: {processed}.' if processed else 'В учёте нет ответов бота, которые удалось удалить.'
-            summary+=' Твои сообщения и сохранённые материалы остались.'
+            summary=f'Обработано служебных сообщений и ответов бота: {processed}.' if processed else 'В учёте нет служебных сообщений или ответов бота, которые удалось удалить.'
+            summary+=' Фото, заметки, пояснения и сохранённые материалы остались.'
             if expired:summary+=f'\nСтарше 48 часов: {expired}.'
             if failed:summary+=f'\nTelegram не дал удалить: {failed}. Попробуй позже.'
-            summary+='\nСтарые ответы, которые прежняя версия не учитывала, могут остаться. Ответь на такой ответ командой /clear, чтобы убрать его. Уведомление исчезнет через 8 секунд.'
+            summary+='\nСтарые неучтённые команды, нажатия кнопок и ответы бота: ответь на нужное сообщение командой /clear. Уведомление исчезнет через 8 секунд.'
             result=await self.send(uid,summary)
             async def hide_notice():
                 await asyncio.sleep(8)
@@ -168,18 +187,23 @@ class Bot:
     async def message(self, m, edited=False):
         if m.get('chat',{}).get('type')!='private': return
         uid=m['from']['id']; text=m.get('text',m.get('caption',''))
-        if text.startswith('/start '):
-            code=text.split(' ',1)[1].strip()
+        action=None if edited else self.service_action(m)
+        if action=='start' and len(text.strip().split(None,1))==2:
+            code=text.strip().split(None,1)[1].strip()
             if self.store.pair(uid,code):
+                self.observe_service_message(uid,m)
                 await self.configure_menu(uid)
                 await self.send(uid,'Ты подключён к Изbrainому. Пересылай сюда важное. Чтобы найти — напиши «Найди…» или нажми кнопку поиска.')
                 return
         if not self.store.allowed(uid,self.config.allowed_ids):
-            if text.startswith('/start'):
+            if action=='start':
                 await self.call('sendMessage',chat_id=uid,text='Изbrainое пока в закрытом тесте. Нужна личная ссылка-приглашение от владельца.')
             return
         self.observe_own_message(uid,m.get('reply_to_message'))
-        if not edited and not m.get('forward_origin') and re.fullmatch(r'/clear(?:@'+re.escape(self.config.bot_username)+r')?\s*',text,re.I):
+        if action:self.observe_service_message(uid,m)
+        if action=='clear':
+            self.observe_service_message(uid,m.get('reply_to_message'))
+            await self.report_saved(uid)
             await self.clear_chat(uid);return
         if edited:
             old=self.store.find_message(uid,m['message_id'])
@@ -187,15 +211,15 @@ class Bot:
                 self.store.update(uid,old['id'],body=text)
                 await self.processor.index(uid,old['id'])
             return
-        if text in ('/start','/help'):
+        if action in ('start','help'):
             await self.configure_menu(uid)
-            await self.send(uid,'Пересылай сообщения, фото, PDF и голосовые. Я сохраню их.\n\n«Найди…» — поиск. Ответ на сохранённое сообщение — добавить контекст. Пояснения помогают пересматривать и похожие материалы.\n\nНапиши «удалить» в пояснении или ответом на нужный материал — запись попадёт в корзину. Восстановить можно в настройках. /cancel — отменить ввод.\n\n/clear — убрать известные ответы бота за последние 48 часов. Твои сообщения и архив сохранятся. Старые неучтённые ответы могут остаться.\n\nДля анализа PDF читаются первые 4 страницы, включая сканы. Пароли добавляй в защищённом разделе подборок.',self.web_button() or self.keyboard())
+            await self.send(uid,'Пересылай сообщения, фото, PDF и голосовые. Я сохраню их.\n\n«Найди…» — поиск. Ответ на сохранённое сообщение — добавить контекст. Пояснения помогают пересматривать и похожие материалы.\n\nНапиши «удалить» в пояснении или ответом на нужный материал — запись попадёт в корзину. Восстановить можно в настройках. /cancel — отменить ввод.\n\n/clear — убрать ответы бота, команды /start, /help, /cancel, /clear и нажатия «Подборки»/«Найти» за последние 48 часов. Фото, заметки, пояснения и архив сохранятся. Старые неучтённые служебные сообщения можно убрать, ответив на них командой /clear.\n\nДля анализа PDF читаются первые 4 страницы, включая сканы. Пароли добавляй в защищённом разделе подборок.',self.web_button() or self.keyboard())
             return
-        if text=='/cancel':
+        if action=='cancel':
             self.store.mode(uid,''); await self.send(uid,'Отменено. Следующее сообщение сохраню как заметку.'); return
-        if text=='🔎 Найти':
+        if action=='search':
             self.store.mode(uid,'search'); await self.send(uid,'Что найти? Напиши название, фразу или описание. /cancel — отмена.'); return
-        if text=='🗂 Подборки':
+        if action=='collections':
             if self.config.public_url: await self.send(uid,'Все материалы и подборки:',self.web_button())
             else:
                 groups={}
@@ -303,6 +327,12 @@ class Bot:
                     and not self.store.mode(uid) and not text.startswith('/') and not re.match(r'^найди\b',text,re.I)
                     and not sensitive(text) and self.store.allowed(uid,self.config.allowed_ids))
 
+    async def report_saved(self,uid):
+        items=self.batch_saved.pop(uid,[])
+        if not items:return
+        groups=list(dict.fromkeys(g for i in items for g in (i['groups'] or ['Неразобранное'])))
+        await self.send(uid,f'Сохранено материалов: {len(items)}.\nПодборки: '+', '.join(groups)+'\n\nЧтобы добавить пояснение, ответь на конкретное исходное сообщение.',self.web_button() or self.keyboard())
+
     async def handle_updates(self,updates):
         """Parallelize independent saves, flush before every ordered interaction."""
         counts={}
@@ -323,9 +353,7 @@ class Bot:
                     await flush()
                     await self.handle_update(u)
             await flush()
-            for uid,items in self.batch_saved.items():
-                groups=list(dict.fromkeys(g for i in items for g in (i['groups'] or ['Неразобранное'])))
-                await self.send(uid,f'Сохранено материалов: {len(items)}.\nПодборки: '+', '.join(groups)+'\n\nЧтобы добавить пояснение, ответь на конкретное исходное сообщение.',self.web_button() or self.keyboard())
+            for uid in list(self.batch_saved):await self.report_saved(uid)
         finally:
             self.batch_users=set();self.batch_saved={}
 
@@ -339,7 +367,7 @@ class Bot:
             webhook=await self.call('getWebhookInfo')
             if webhook.get('url'):
                 self.error='У бота уже настроен webhook. Отключите его перед локальным запуском.'; return
-            await self.call('setMyCommands',commands=[{'command':'start','description':'Начать'},{'command':'help','description':'Как пользоваться'},{'command':'clear','description':'Убрать ответы бота, сохранить архив'},{'command':'cancel','description':'Отменить ввод'}])
+            await self.call('setMyCommands',commands=[{'command':'start','description':'Начать'},{'command':'help','description':'Как пользоваться'},{'command':'clear','description':'Убрать команды и ответы, сохранить архив'},{'command':'cancel','description':'Отменить ввод'}])
             if self.config.public_url:
                 await self.call('setChatMenuButton',menu_button={'type':'web_app','text':'Подборки','web_app':{'url':self.config.public_url}})
                 with self.store.db() as c:
