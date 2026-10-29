@@ -41,6 +41,8 @@ class Store:
               groups_json TEXT NOT NULL,analysis_json TEXT NOT NULL,embedding TEXT,model TEXT NOT NULL,updated REAL,
               PRIMARY KEY(user_id,item_id));
             CREATE TABLE IF NOT EXISTS web_cache(query TEXT PRIMARY KEY,result TEXT NOT NULL,created REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS analysis_cache(user_id INTEGER NOT NULL,cache_key TEXT NOT NULL,result TEXT NOT NULL,created REAL NOT NULL,
+              PRIMARY KEY(user_id,cache_key));
             CREATE TABLE IF NOT EXISTS outgoing_messages(user_id INTEGER NOT NULL,message_id INTEGER NOT NULL,created REAL NOT NULL,
               PRIMARY KEY(user_id,message_id));
             CREATE TABLE IF NOT EXISTS ai_usage(id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,month TEXT NOT NULL,created REAL NOT NULL,

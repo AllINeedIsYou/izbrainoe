@@ -59,6 +59,7 @@ class Processor:
         self.config=config; self.store=store
         self.ai_ready=False; self.ai_error='Не подключена'
         self.limit=asyncio.Semaphore(1)
+        self.embed_backoff=0
         self.audio_limit=asyncio.Semaphore(1)
         self.index_locks={}
         self.analyzer=PersonalAnalyzer(config,store,self.embed,cosine)
@@ -109,11 +110,16 @@ class Processor:
 
     async def embed(self, texts):
         async with self.limit:
-            async with httpx.AsyncClient(timeout=120,trust_env=False) as c:
-                r=await c.post(self.config.ollama_url+'/api/embed',json={
-                    'model':self.config.embed_model,'input':texts,'truncate':True,'keep_alive':'5m'})
-                r.raise_for_status()
-                return r.json()['embeddings']
+            if time.monotonic()<self.embed_backoff:raise RuntimeError('Модель поиска временно недоступна')
+            try:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(10,connect=2),trust_env=False) as c:
+                    r=await c.post(self.config.ollama_url+'/api/embed',json={
+                        'model':self.config.embed_model,'input':texts,'truncate':True,'keep_alive':'5m'})
+                    r.raise_for_status()
+                    return r.json()['embeddings']
+            except (httpx.HTTPError,ValueError,KeyError):
+                self.embed_backoff=time.monotonic()+30
+                raise
 
     async def classify(self, text):
         fallback=proposed_groups(text)
@@ -138,12 +144,12 @@ class Processor:
         except Exception: pass
         return fallback
 
-    async def index(self, uid, item_id):
+    async def index(self, uid, item_id, force=False):
         lock=self.index_locks.setdefault((uid,item_id),asyncio.Lock())
         async with lock:
-            await self._index(uid,item_id)
+            await self._index(uid,item_id,force)
 
-    async def _index(self, uid, item_id):
+    async def _index(self, uid, item_id, force=False):
         item=self.store.get(uid,item_id,raw=True)
         if not item: return
         self.store.update(uid,item_id,analysis_state='analyzing')
@@ -164,7 +170,7 @@ class Processor:
                 self.ai_error='Поиск по словам работает; модель временно недоступна'
                 vs=None
         self.store.replace_chunks(uid,item_id,cs,vs,self.config.embed_model if vs else '')
-        analysis=await self.analyzer.analyse(item,proposed_groups(text),vs[0] if vs else None)
+        analysis=await self.analyzer.analyse(item,proposed_groups(text),vs[0] if vs else None,force=force)
         groups=[g.strip() for g in analysis.get('groups',[]) if isinstance(g,str) and 1<len(g.strip())<=60 and not sensitive(g)]
         analysis['groups']=groups[:3]
         extra='\n'.join([analysis.get('summary',''),analysis.get('document_type',''),analysis.get('subject',''),*analysis.get('topics',[]),*groups[:3]]).strip()
@@ -177,7 +183,7 @@ class Processor:
         unread_stub=bool(item['source_label'] and item['kind']=='document' and not item['path'])
         understood_image=analysis.get('method')=='gemini' and analysis.get('cloud',{}).get('images',0)>0
         values={'analysis_json':json.dumps(analysis,ensure_ascii=False),
-                'analysis_state':'needs_original' if unread_stub or not (item['body'].strip() or item['context'].strip() or understood_image) else 'ready'}
+                'analysis_state':'needs_original' if unread_stub or not (item['body'].strip() or item['context'].strip() or understood_image) else 'needs_context' if analysis.get('needs_context') else 'ready'}
         if not current['manual_groups']:values['groups_json']=json.dumps(groups[:3],ensure_ascii=False)
         self.store.update(uid,item_id,**values)
         if extra and not sensitive(extra):self.store.add_chunk(uid,item_id,len(cs),extra,extra_vector,self.config.embed_model)
@@ -243,6 +249,7 @@ class Processor:
         tasks=[t for t in [*self.review_tasks.values(),*self.rebuild_tasks.values()] if not t.done()]
         for t in tasks:t.cancel()
         if tasks:await asyncio.gather(*tasks,return_exceptions=True)
+        await self.analyzer.provod.close()
 
     async def reread(self,uid,item_id):
         item=self.store.get(uid,item_id,raw=True)
@@ -253,7 +260,7 @@ class Processor:
             current=self.store.get(uid,item_id,raw=True)
             if not current or current['updated']!=item['updated']:return
             self.store.update(uid,item_id,body='\n\n'.join(x for x in (item.get('original_caption',''),text) if x),extraction=status)
-        await self.index(uid,item_id)
+        await self.index(uid,item_id,force=True)
 
     def rebuild(self,uid):
         if (task:=self.rebuild_tasks.get(uid)) and not task.done():return False

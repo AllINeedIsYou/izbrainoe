@@ -6,8 +6,10 @@ import ImageIO
 
 guard CommandLine.arguments.count >= 2 else { exit(1) }
 let url = URL(fileURLWithPath: CommandLine.arguments[1])
+let edgeIndex = CommandLine.arguments.firstIndex(of:"--max-edge")
+let maxEdge: CGFloat = CGFloat(edgeIndex.flatMap { $0+1 < CommandLine.arguments.count ? Int(CommandLine.arguments[$0+1]) : nil }.map { max(1024,min(2048,$0)) } ?? 1536)
 func jpeg(_ cg: CGImage, _ number: Int) throws -> [String:Any] {
-    guard let data = NSBitmapImageRep(cgImage:cg).representation(using:.jpeg,properties:[.compressionFactor:0.75]) else { throw NSError(domain:"preview",code:1) }
+    guard let data = NSBitmapImageRep(cgImage:cg).representation(using:.jpeg,properties:[.compressionFactor:0.84]) else { throw NSError(domain:"preview",code:1) }
     return ["number":number,"mime_type":"image/jpeg","data":data.base64EncodedString(),"width":cg.width,"height":cg.height]
 }
 func recognize(_ handler: VNImageRequestHandler) throws -> String {
@@ -32,7 +34,7 @@ do {
             guard let page = document.page(at:index) else { continue }
             if CommandLine.arguments.contains("--preview") {
                 let bounds = page.bounds(for:.mediaBox)
-                let scale = 1536 / max(bounds.width,bounds.height)
+                let scale = maxEdge / max(bounds.width,bounds.height)
                 let image = page.thumbnail(of:NSSize(width:bounds.width*scale,height:bounds.height*scale),for:.mediaBox)
                 var rect = NSRect(origin:.zero,size:image.size)
                 if let cg = image.cgImage(forProposedRect:&rect,context:nil,hints:nil) { pages.append(try jpeg(cg,index+1)) }
@@ -56,7 +58,7 @@ do {
         print(String(data:data,encoding:.utf8)!)
     } else if CommandLine.arguments.contains("--preview") {
         guard let source = CGImageSourceCreateWithURL(url as CFURL,nil),
-              let cg = CGImageSourceCreateThumbnailAtIndex(source,0,[kCGImageSourceCreateThumbnailFromImageAlways:true,kCGImageSourceThumbnailMaxPixelSize:1536,kCGImageSourceCreateThumbnailWithTransform:true] as CFDictionary) else { exit(2) }
+              let cg = CGImageSourceCreateThumbnailAtIndex(source,0,[kCGImageSourceCreateThumbnailFromImageAlways:true,kCGImageSourceThumbnailMaxPixelSize:Int(maxEdge),kCGImageSourceCreateThumbnailWithTransform:true] as CFDictionary) else { exit(2) }
         let data = try JSONSerialization.data(withJSONObject:["pages":[try jpeg(cg,1)]])
         print(String(data:data,encoding:.utf8)!)
     } else {

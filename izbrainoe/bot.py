@@ -16,6 +16,7 @@ class Bot:
         self.client=httpx.AsyncClient(timeout=45)
         self.running=False; self.error=''; self.tasks=set()
         self.batch_users=set();self.batch_saved={};self.clear_locks={}
+        self.media_limit=asyncio.Semaphore(3)
 
     async def call(self, method, **data):
         try:
@@ -283,6 +284,51 @@ class Bot:
             confirmation=await self.send(uid,'Сохранено: '+(' · '.join(i['groups']) or 'Неразобранное')+('\nЕсть файл с таким же содержимым.' if duplicate else '')+('\n'+status if status else ''),markup)
             self.store.update(uid,i['id'],bot_message=confirmation['message_id'])
 
+    async def handle_update(self,u):
+        try:
+            if 'message' in u:await self.message(u['message'])
+            elif 'edited_message' in u:await self.message(u['edited_message'],True)
+            elif 'callback_query' in u:await self.callback(u['callback_query'])
+        except Exception:
+            self.error='Не удалось обработать сообщение. Попробуйте ещё раз.'
+            m=u.get('message') or u.get('edited_message')
+            if m and self.store.allowed(m.get('from',{}).get('id'),self.config.allowed_ids):
+                try:await self.send(m['from']['id'],self.error)
+                except Exception:pass
+
+    def parallel_media(self,u):
+        m=u.get('message',{});uid=m.get('from',{}).get('id')
+        text=m.get('text',m.get('caption',''))
+        return bool(uid and (m.get('photo') or m.get('document')) and not m.get('reply_to_message')
+                    and not self.store.mode(uid) and not text.startswith('/') and not re.match(r'^найди\b',text,re.I)
+                    and not sensitive(text) and self.store.allowed(uid,self.config.allowed_ids))
+
+    async def handle_updates(self,updates):
+        """Parallelize independent saves, flush before every ordered interaction."""
+        counts={}
+        for u in updates:
+            uid=u.get('message',{}).get('from',{}).get('id')
+            if uid:counts[uid]=counts.get(uid,0)+1
+        self.batch_users={uid for uid,n in counts.items() if n>1};self.batch_saved={}
+        pending=[]
+        async def media(u):
+            async with self.media_limit:await self.handle_update(u)
+        async def flush():
+            if pending:
+                await asyncio.gather(*(media(u) for u in pending));pending.clear()
+        try:
+            for u in updates:
+                if self.parallel_media(u):pending.append(u)
+                else:
+                    await flush()
+                    await self.handle_update(u)
+            await flush()
+            for uid,items in self.batch_saved.items():
+                groups=list(dict.fromkeys(g for i in items for g in (i['groups'] or ['Неразобранное'])))
+                await self.send(uid,f'Сохранено материалов: {len(items)}.\nПодборки: '+', '.join(groups)+'\n\nЧтобы добавить пояснение, ответь на конкретное исходное сообщение.',self.web_button() or self.keyboard())
+        finally:
+            self.batch_users=set();self.batch_saved={}
+
     async def run(self):
         if not self.config.token: return
         offset=int(self.store.meta('update_offset') or 0)
@@ -304,29 +350,9 @@ class Bot:
             while True:
                 try:
                     updates=await self.call('getUpdates',offset=offset,timeout=25,allowed_updates=['message','edited_message','callback_query'])
-                    counts={}
-                    for u in updates:
-                        m=u.get('message',{})
-                        uid=m.get('from',{}).get('id')
-                        if uid:counts[uid]=counts.get(uid,0)+1
-                    self.batch_users={uid for uid,n in counts.items() if n>1}
-                    self.batch_saved={}
-                    for u in updates:
-                        try:
-                            if 'message' in u: await self.message(u['message'])
-                            elif 'edited_message' in u: await self.message(u['edited_message'],True)
-                            elif 'callback_query' in u: await self.callback(u['callback_query'])
-                        except Exception:
-                            self.error='Не удалось обработать сообщение. Попробуйте ещё раз.'
-                            m=u.get('message') or u.get('edited_message')
-                            if m and self.store.allowed(m.get('from',{}).get('id'),self.config.allowed_ids):
-                                try: await self.send(m['from']['id'],self.error)
-                                except Exception: pass
-                        offset=u['update_id']+1; self.store.meta('update_offset',offset)
-                    for uid,items in self.batch_saved.items():
-                        groups=list(dict.fromkeys(g for i in items for g in (i['groups'] or ['Неразобранное'])))
-                        await self.send(uid,f'Сохранено материалов: {len(items)}.\nПодборки: '+', '.join(groups)+'\n\nЧтобы добавить пояснение, ответь на конкретное исходное сообщение.',self.web_button() or self.keyboard())
-                    self.batch_users=set();self.batch_saved={}
+                    await self.handle_updates(updates)
+                    if updates:
+                        offset=updates[-1]['update_id']+1;self.store.meta('update_offset',offset)
                 except TelegramError:
                     self.error='Нет соединения с Telegram или бот запущен в другом месте'
                     await asyncio.sleep(5)
