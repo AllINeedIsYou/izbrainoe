@@ -29,9 +29,9 @@ class Usage:
     def __init__(self,store):self.store=store
     def summary(self):
         with self.store.db() as c:
-            row=c.execute('SELECT COALESCE(SUM(cost_usd),0),COALESCE(SUM(reserved_usd),0),COUNT(*),COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0) FROM ai_usage WHERE month=? AND status!=?',(month(),'rejected')).fetchone()
+            row=c.execute("SELECT COALESCE(SUM(cost_usd),0),COALESCE(SUM(reserved_usd),0),COUNT(*),COALESCE(SUM(CASE WHEN status='done' THEN input_tokens ELSE 0 END),0),COALESCE(SUM(output_tokens),0),COALESCE(SUM(status='rejected'),0) FROM ai_usage WHERE month=?",(month(),)).fetchone()
         return {'month':month(),'estimated_usd':round(row[0],6),'reserved_usd':round(row[1],6),'requests':row[2],
-                'input_tokens':row[3],'output_tokens':row[4]}
+                'input_tokens':row[3],'output_tokens':row[4],'failed_requests':row[5]}
     def reserve(self,uid,input_tokens,limit,images):
         ir,orr=prices();amount=(input_tokens*ir+OUTPUT_CAP*orr)/1e6;key=uuid.uuid4().hex
         with self.store.db() as c:

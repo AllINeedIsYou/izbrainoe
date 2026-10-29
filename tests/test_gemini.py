@@ -187,3 +187,4 @@ def test_overload_is_separate_from_billing_and_releases_reservation(tmp_path,mon
     assert err.value.code=='overloaded' and '503' in str(err.value)
     assert g.usage.summary()['reserved_usd']==0 and g.usage.summary()['estimated_usd']==0
     assert Gemini.api_error(402).code=='payment_required'
+    assert g.usage.summary()['failed_requests']==1 and g.usage.summary()['requests']==1
