@@ -127,7 +127,7 @@ def test_gemini_visual_evidence_works_when_ocr_is_empty(tmp_path,monkeypatch):
         i=s.create(101,'photo','Фото.jpg','',path=str(image),mime='image/jpeg')
         await p.index(101,i['id']);r=s.get(101,i['id'])
         assert r['analysis']['method']=='gemini'
-        assert r['groups']==['Учёба / Расписание']
+        assert r['groups']==['Учёба']
         assert r['analysis_state']=='ready'
         found=await p.search(101,'школьных занятий')
         assert found['total']==1 and found['items'][0]['id']==i['id']
@@ -141,7 +141,7 @@ def test_gemini_failure_falls_back_without_losing_material(tmp_path,monkeypatch)
         cfg,s,g=setup(tmp_path);p=Processor(cfg,s)
         i=s.create(101,'note','Материал','Сочинение по русскому языку о памяти и ответственности человека.')
         await p.index(101,i['id']);r=s.get(101,i['id'])
-        assert r['groups']==['Русский язык / Сочинения']
+        assert r['groups']==['Русский язык']
         assert r['analysis']['cloud']['status']=='budget_limit' and r['body']
         await p.close()
     asyncio.run(run())

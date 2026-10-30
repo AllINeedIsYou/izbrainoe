@@ -299,8 +299,8 @@ class Processor:
         except Exception:
             self.store.learning_state(uid,{'status':'error','checked':checked,'changed':changed,'updated':time.time()})
 
-    async def search(self, uid, query, group='', kind='', offset=0, limit=20, trash=False):
-        items=self.store.list(uid,group,kind,trash)
+    async def search(self, uid, query, group='', kind='', offset=0, limit=20, trash=False,document_type=''):
+        items=self.store.list(uid,group,kind,trash,document_type)
         if not query.strip(): return {'items':items[offset:offset+limit],'total':len(items),'mode':'recent'}
         qwords=set(tokens(query)); q=query.lower().strip()
         # A number in the query is a hard constraint; don't mix assignment 18 and 19.

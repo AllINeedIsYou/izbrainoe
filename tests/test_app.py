@@ -58,14 +58,14 @@ def test_csrf_guard(env):
 def test_save_search_context_and_manual_groups(env):
     c,_=env
     i=c.post('/api/items',json={'text':'Договор на обучение в университете. Стоимость 120000 рублей.'}).json()
-    assert i['groups']==['Вуз / Договоры']
+    assert i['groups']==['Вуз']
     assert c.get('/api/items',params={'q':'стоимость обучения'}).json()['total']==1
     updated=c.patch('/api/items/'+i['id'],json={'groups':['Мой проект'],'context':'Оплата общежития'}).json()
     assert updated['groups']==['Мой проект']
     updated=c.patch('/api/items/'+i['id'],json={'context':'Материалы для поступления'}).json()
     assert updated['groups']==['Мой проект']
     updated=c.patch('/api/items/'+i['id'],json={'automatic':True}).json()
-    assert updated['groups']==['Вуз / Договоры']
+    assert updated['groups']==['Вуз']
 
 def test_number_search_is_precise(env):
     c,_=env

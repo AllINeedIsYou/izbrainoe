@@ -38,7 +38,7 @@ def test_unchanged_groups_dont_freeze_classification(tmp_path):
     try:
         i=c.post('/api/items',json={'text':'Запись без понятного назначения'}).json()
         r=c.patch('/api/items/'+i['id'],json={'context':'Это сочинение по русскому языку','groups':i['groups']}).json()
-        assert r['groups']==['Русский язык / Сочинения']
+        assert r['groups']==['Русский язык']
         assert r['manual_groups']==0
     finally:c.__exit__(None,None,None)
 
@@ -55,7 +55,7 @@ def test_feedback_revisits_only_related_own_items(tmp_path):
         before_other=s.get(202,other['id'])['groups']
         s.update(101,a['id'],context='Это сочинение по русскому языку')
         await p.feedback(101,a['id']);await p.review_tasks[101]
-        assert s.get(101,b['id'])['groups']==['Русский язык / Сочинения']
+        assert s.get(101,b['id'])['groups']==['Русский язык']
         assert s.get(101,fixed['id'])['groups']==['Мой проект']
         assert s.get(202,other['id'])['groups']==before_other
         assert 'Сочинения' not in ' '.join(s.get(101,math['id'])['groups'])
@@ -113,7 +113,7 @@ def test_bulk_reanalysis_keeps_manual_and_deleted(tmp_path):
         s.update(101,gone['id'],deleted=1)
         assert p.rebuild(101) and not p.rebuild(101)
         await p.rebuild_tasks[101]
-        assert s.get(101,b['id'])['groups']==['Русский язык / Сочинения']
+        assert s.get(101,b['id'])['groups']==['Русский язык']
         assert s.get(101,gone['id']) is None
         assert s.learning_state(101)['checked']==2
         await p.close()
@@ -172,7 +172,7 @@ def test_essay_about_lectures_is_still_essay():
     from izbrainoe.knowledge import grounded_features,canonical_groups
     text='Почему важно говорить выразительно? Авторская позиция ясна: культура речи необходима. Два примера-аргумента показывают, как скучными лекциями можно убить интерес к науке. Таким образом, слово влияет на людей.'
     assert grounded_features(text)[0]=='сочинение'
-    assert canonical_groups('лекция','',[],[])==['Лекции']
+    assert canonical_groups('лекция','',[],[])==['Учёба']
     assert grounded_features('| Темп |: 120. | Куплет |: Am Dm G C. Текст песни.')[0]=='песня'
     assert grounded_features('Example_v1.apk')[0]=='приложение'
 
@@ -183,5 +183,5 @@ def test_timetable_from_ocr_structure_without_complete_title():
     for text in (subjects,bells):
         kind,subject=grounded_features(text)
         assert (kind,subject)==('расписание','')
-        assert canonical_groups(kind,subject,[],[])==['Расписание']
+        assert canonical_groups(kind,subject,[],[])==['Учёба']
     assert not looks_like_schedule('Очно-заочное обучение. Вступительные предметы: русский язык, математика, обществознание.')

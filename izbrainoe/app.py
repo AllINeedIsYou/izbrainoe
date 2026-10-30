@@ -18,6 +18,7 @@ from .store import Store
 from .processing import Processor, sensitive,delete_intent
 from .auth import validate_telegram
 from .bot import Bot, TelegramError
+from .folders import document_category
 
 class Note(BaseModel):
     text: str = Field(min_length=1,max_length=50000)
@@ -128,11 +129,15 @@ def create_app(config=None):
         await processor.probe()
         rows=store.list(uid)
         owner=store.meta('owner')
-        groups={}
+        groups={};group_types={}
         for i in rows:
-            for g in i['groups'] or ['Неразобранное']: groups[g]=groups.get(g,0)+1
+            for g in i['groups'] or ['Неразобранное']:
+                groups[g]=groups.get(g,0)+1
+                category=document_category(i['analysis'])
+                categories=group_types.setdefault(g,{})
+                categories[category]=categories.get(category,0)+1
         return {'id':uid,'local':bool(local_session(request)),'owner':bool(local_session(request) or str(uid)==owner),
-                'groups':groups,'total':len(rows),'bot_username':config.bot_username,
+                'groups':groups,'group_types':group_types,'total':len(rows),'bot_username':config.bot_username,
                 'bot_configured':bool(config.token),'bot_running':bot.running,'bot_error':bot.error,
                 'public_url':config.public_url,'ai_ready':processor.ai_ready,'ai_error':processor.ai_error,
                 'chat_model':bool(config.chat_model),'ocr_ready':(ROOT/'runtime'/'ocr').exists(),
@@ -176,9 +181,9 @@ def create_app(config=None):
         return {'ok':True,'message':'Gemini через Provod включена для следующих разборов.','provod':processor.analyzer.provod.status()}
 
     @app.get('/api/items')
-    async def items(q:str='',group:str='',kind:str='',offset:int=0,limit:int=40,trash:bool=False,uid=Depends(user)):
+    async def items(q:str='',group:str='',kind:str='',offset:int=0,limit:int=40,trash:bool=False,document_type:str='',uid=Depends(user)):
         if len(q)>500: raise HTTPException(400,'Запрос слишком длинный.')
-        return await processor.search(uid,q,group,kind,max(0,offset),min(100,max(1,limit)),trash)
+        return await processor.search(uid,q,group,kind,max(0,offset),min(100,max(1,limit)),trash,document_type)
 
     @app.get('/api/items/{item_id}')
     async def get_item(item_id:str,uid=Depends(user)):

@@ -24,7 +24,7 @@ async def main():
         for i in (a,b,c):
             r=s.get(101,i['id']);print('После пояснения:',i['title'],r['groups'],r['analysis'].get('document_type'),r['analysis'].get('subject'),flush=True)
         print('Пересмотр:',s.learning_state(101),flush=True)
-        assert 'Русский язык / Сочинения' in s.get(101,b['id'])['groups']
+        assert 'Русский язык' in s.get(101,b['id'])['groups']
         assert not any('Сочинения' in g for g in s.get(101,c['id'])['groups'])
         print('Личное уточнение перенесено на связанный материал; математика не затронута.',flush=True)
         await p.close()

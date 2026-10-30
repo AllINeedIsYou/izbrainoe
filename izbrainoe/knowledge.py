@@ -16,7 +16,8 @@ TYPE_LABELS={'essay':'Сочинения','сочинение':'Сочинени
              'договор':'Договоры','расписание':'Расписание','квитанция':'Оплата',
              'песня':'Музыка / Песни','стихотворение':'Стихи','приложение':'Приложения',
              'рецепт':'Рецепты','код':'Программирование','инструкция':'Инструкции','билет':'Поездки / Билеты'}
-SUBJECTS={'русский язык':'Русский язык','русский':'Русский язык','математика':'Математика',
+SUBJECTS={'высшая математика':'Высшая математика','вышмат':'Высшая математика',
+          'русский язык':'Русский язык','русский':'Русский язык','математика':'Математика',
           'информатика':'Информатика','литература':'Литература','история':'История',
           'физика':'Физика','химия':'Химия','английский язык':'Английский язык',
           'обществознание':'Обществознание','биология':'Биология','геометрия':'Геометрия'}
@@ -64,6 +65,7 @@ def grounded_features(text,context=''):
     subject='';kind=''
     # The user's explicit explanation is the strongest evidence.
     for source in (context.lower(),text.lower()):
+        if re.search(r'вышмат|высш\w*\s+математ',source):subject='Высшая математика';break
         for key,value in SUBJECTS.items():
             if key=='история' and not re.search(r'(?:урок|предмет|по|учебник|конспект)\s+истори|^история\s*$',source):continue
             if re.search(r'\b'+re.escape(key)+r'\b',source):subject=value;break
@@ -95,10 +97,10 @@ def grounded_features(text,context=''):
 def canonical_groups(kind,subject,proposed,fallback):
     name=TYPE_LABELS.get(kind.lower())
     normalized=SUBJECTS.get(subject.lower(),subject.strip())
-    if name and normalized:return [normalized+' / '+name]
+    if name and normalized:return primary_folder([normalized+' / '+name])
     if name:
         domain=primary_folder(fallback)
-        return [domain[0]+' / '+name] if domain and '/' not in name and domain[0]!=name else [name]
+        return primary_folder([domain[0]+' / '+name] if domain and '/' not in name and domain[0]!=name else [name])
     if normalized in SUBJECTS.values():return [normalized]
     return primary_folder(proposed or fallback)
 
@@ -131,7 +133,7 @@ class PersonalAnalyzer:
             result['elapsed_ms']=round((time.monotonic()-start)*1000)
             return result
         memories=self.store.memories(item['user_id'])
-        fingerprint={'policy':'vision-v3-single-folder','provider':self.config.ai_provider,'model':self.config.gemini_model,
+        fingerprint={'policy':'vision-v4-topic-folders','provider':self.config.ai_provider,'model':self.config.gemini_model,
                      'web':self.config.web_lookup,'digest':item.get('digest',''),'kind':item['kind'],
                      'title':item['title'] if not is_file else '', 'body':item['body'],'context':item['context'],
                      'groups':item['groups_json'] if item['manual_groups'] else '',

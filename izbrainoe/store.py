@@ -6,7 +6,7 @@ import sqlite3
 import time
 import uuid
 from contextlib import contextmanager
-from .folders import single_folder_analysis
+from .folders import single_folder_analysis,document_category
 
 class Store:
     def __init__(self, folder):
@@ -64,14 +64,15 @@ class Store:
                 c.execute('INSERT OR IGNORE INTO outgoing_messages SELECT user_id,bot_message,created FROM items WHERE user_id>0 AND bot_message IS NOT NULL')
                 c.execute('INSERT OR IGNORE INTO outgoing_messages SELECT user_id,message_id,0 FROM message_links WHERE user_id>0')
                 c.execute("INSERT INTO meta VALUES('outgoing_backfill_v1','1')")
-            if not c.execute("SELECT 1 FROM meta WHERE key='single_folder_v1'").fetchone():
+            if not c.execute("SELECT 1 FROM meta WHERE key='single_folder_v1'").fetchone() or not c.execute("SELECT 1 FROM meta WHERE key='topic_folders_v1'").fetchone():
                 for table in ('items','memories'):
                     identity='id' if table=='items' else 'item_id'
                     for row in c.execute(f'SELECT user_id,{identity},groups_json,analysis_json FROM {table}').fetchall():
                         analysis=single_folder_analysis(json.loads(row['analysis_json']),json.loads(row['groups_json']))
                         c.execute(f'UPDATE {table} SET groups_json=?,analysis_json=? WHERE user_id=? AND {identity}=?',
                                   (json.dumps(analysis['groups'],ensure_ascii=False),json.dumps(analysis,ensure_ascii=False),row['user_id'],row[identity]))
-                c.execute("INSERT INTO meta VALUES('single_folder_v1','1')")
+                c.execute("INSERT OR REPLACE INTO meta VALUES('single_folder_v1','1')")
+                c.execute("INSERT OR REPLACE INTO meta VALUES('topic_folders_v1','1')")
             for table in ('items','memories'):
                 for action in ('INSERT','UPDATE OF groups_json'):
                     suffix='insert' if action=='INSERT' else 'update'
@@ -79,6 +80,10 @@ class Store:
                         BEFORE {action} ON {table}
                         WHEN NOT json_valid(NEW.groups_json) OR json_type(NEW.groups_json)!='array' OR json_array_length(NEW.groups_json)>1
                         BEGIN SELECT RAISE(ABORT,'A material can have at most one folder'); END''')
+                    c.execute(f'''CREATE TRIGGER IF NOT EXISTS {table}_topic_folder_{suffix}
+                        BEFORE {action} ON {table}
+                        WHEN instr(COALESCE(json_extract(NEW.groups_json,'$[0]'),''),'/')>0
+                        BEGIN SELECT RAISE(ABORT,'Use one topic folder; document types are filters'); END''')
         os.chmod(self.path, 0o600)
         if not self.meta('local_key'):
             self.meta('local_key', secrets.token_urlsafe(32))
@@ -154,13 +159,14 @@ class Store:
             r=c.execute('SELECT * FROM items WHERE user_id=? AND id=?'+('' if trash else ' AND deleted IS NULL'),(uid,item_id)).fetchone()
             return dict(r) if r and raw else self.encode(r)
 
-    def list(self, uid, group='', kind='', trash=False):
+    def list(self, uid, group='', kind='', trash=False, document_type=''):
         with self.db() as c:
             rows=c.execute('SELECT * FROM items WHERE user_id=? AND deleted IS '+('NOT NULL' if trash else 'NULL')+' ORDER BY created DESC',(uid,)).fetchall()
         out=[self.encode(r) for r in rows]
         if group:
             out=[r for r in out if group in r['groups'] or (group=='Неразобранное' and not r['groups'])]
         if kind: out=[r for r in out if r['kind']==kind]
+        if document_type:out=[r for r in out if document_category(r['analysis'])==document_type]
         return out
 
     def folder_names(self,uid):
