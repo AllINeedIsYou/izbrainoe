@@ -100,7 +100,7 @@ class Provod:
         return dict(provider='provod', model=MODEL, key_configured=bool(self.config.provod_key),
                     error=self.error, monthly_limit_rub=self.config.provod_monthly_limit_rub,
                     usage=self.usage.summary(), input_price=INPUT_PRICE, output_price=OUTPUT_PRICE,
-                    currency='RUB', prices_checked='2026-10-29', analysis_policy='vision-v2')
+                    currency='RUB', prices_checked='2026-10-29', analysis_policy='vision-v3-single-folder')
 
     @staticmethod
     def api_error(status):

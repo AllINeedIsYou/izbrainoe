@@ -6,6 +6,7 @@ import sqlite3
 import time
 import uuid
 from contextlib import contextmanager
+from .folders import single_folder_analysis
 
 class Store:
     def __init__(self, folder):
@@ -47,6 +48,8 @@ class Store:
               PRIMARY KEY(user_id,message_id));
             CREATE TABLE IF NOT EXISTS service_messages(user_id INTEGER NOT NULL,message_id INTEGER NOT NULL,created REAL NOT NULL,
               PRIMARY KEY(user_id,message_id));
+            CREATE TABLE IF NOT EXISTS expiring_messages(user_id INTEGER NOT NULL,message_id INTEGER NOT NULL,expires REAL NOT NULL,next_attempt REAL NOT NULL,
+              PRIMARY KEY(user_id,message_id));
             CREATE TABLE IF NOT EXISTS ai_usage(id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,month TEXT NOT NULL,created REAL NOT NULL,
               model TEXT NOT NULL,status TEXT NOT NULL,input_tokens INTEGER NOT NULL DEFAULT 0,output_tokens INTEGER NOT NULL DEFAULT 0,
               cost_usd REAL NOT NULL DEFAULT 0,reserved_usd REAL NOT NULL DEFAULT 0,images INTEGER NOT NULL DEFAULT 0);
@@ -61,6 +64,21 @@ class Store:
                 c.execute('INSERT OR IGNORE INTO outgoing_messages SELECT user_id,bot_message,created FROM items WHERE user_id>0 AND bot_message IS NOT NULL')
                 c.execute('INSERT OR IGNORE INTO outgoing_messages SELECT user_id,message_id,0 FROM message_links WHERE user_id>0')
                 c.execute("INSERT INTO meta VALUES('outgoing_backfill_v1','1')")
+            if not c.execute("SELECT 1 FROM meta WHERE key='single_folder_v1'").fetchone():
+                for table in ('items','memories'):
+                    identity='id' if table=='items' else 'item_id'
+                    for row in c.execute(f'SELECT user_id,{identity},groups_json,analysis_json FROM {table}').fetchall():
+                        analysis=single_folder_analysis(json.loads(row['analysis_json']),json.loads(row['groups_json']))
+                        c.execute(f'UPDATE {table} SET groups_json=?,analysis_json=? WHERE user_id=? AND {identity}=?',
+                                  (json.dumps(analysis['groups'],ensure_ascii=False),json.dumps(analysis,ensure_ascii=False),row['user_id'],row[identity]))
+                c.execute("INSERT INTO meta VALUES('single_folder_v1','1')")
+            for table in ('items','memories'):
+                for action in ('INSERT','UPDATE OF groups_json'):
+                    suffix='insert' if action=='INSERT' else 'update'
+                    c.execute(f'''CREATE TRIGGER IF NOT EXISTS {table}_single_folder_{suffix}
+                        BEFORE {action} ON {table}
+                        WHEN NOT json_valid(NEW.groups_json) OR json_type(NEW.groups_json)!='array' OR json_array_length(NEW.groups_json)>1
+                        BEGIN SELECT RAISE(ABORT,'A material can have at most one folder'); END''')
         os.chmod(self.path, 0o600)
         if not self.meta('local_key'):
             self.meta('local_key', secrets.token_urlsafe(32))
@@ -145,6 +163,9 @@ class Store:
         if kind: out=[r for r in out if r['kind']==kind]
         return out
 
+    def folder_names(self,uid):
+        return list(dict.fromkeys(g for item in self.list(uid) for g in item['groups']))
+
     def create(self, uid, kind, title, body='', **kwargs):
         now=time.time(); item_id=uuid.uuid4().hex
         keys=['id','user_id','kind','title','body','created','updated']
@@ -161,6 +182,15 @@ class Store:
         values={k:v for k,v in values.items() if k in allowed}
         values['updated']=time.time()
         with self.db() as c:
+            if 'groups_json' in values or 'analysis_json' in values:
+                old=c.execute('SELECT groups_json,analysis_json FROM items WHERE user_id=? AND id=?',(uid,item_id)).fetchone()
+                if old:
+                    analysis=single_folder_analysis(json.loads(values.get('analysis_json',old['analysis_json'])),
+                                                    json.loads(values.get('groups_json',old['groups_json'])))
+                    # Existing secondary topics survive a manual folder move.
+                    if 'analysis_json' not in values:
+                        analysis['topics']=list(dict.fromkeys([*analysis['topics'],*json.loads(old['analysis_json']).get('topics',[])]))
+                    values.update(groups_json=json.dumps(analysis['groups'],ensure_ascii=False),analysis_json=json.dumps(analysis,ensure_ascii=False))
             c.execute('UPDATE items SET '+','.join(f'{k}=?' for k in values)+' WHERE user_id=? AND id=?',[*values.values(),uid,item_id])
         return self.get(uid,item_id,trash=True)
 
@@ -217,6 +247,7 @@ class Store:
 
     def remember(self, uid, item_id, context, groups, analysis, vector=None, model=''):
         if not self.get(uid,item_id):return
+        analysis=single_folder_analysis(analysis,groups);groups=analysis['groups']
         with self.db() as c:
             c.execute('INSERT OR REPLACE INTO memories VALUES(?,?,?,?,?,?,?,?)',
                       (uid,item_id,context,json.dumps(groups,ensure_ascii=False),json.dumps(analysis,ensure_ascii=False),json.dumps(vector) if vector else None,model,time.time()))
@@ -258,5 +289,14 @@ class Store:
 
     def forget_chat_messages(self,uid,mids):
         with self.db() as c:
-            for table in ('outgoing_messages','service_messages'):
+            for table in ('outgoing_messages','service_messages','expiring_messages'):
                 c.executemany(f'DELETE FROM {table} WHERE user_id=? AND message_id=?',[(uid,m) for m in mids])
+
+    def expire_message(self,uid,mid,expires):
+        with self.db() as c:c.execute('INSERT OR REPLACE INTO expiring_messages VALUES(?,?,?,?)',(uid,mid,expires,expires))
+
+    def due_messages(self,now):
+        with self.db() as c:return [dict(r) for r in c.execute('SELECT * FROM expiring_messages WHERE next_attempt<=? ORDER BY expires LIMIT 100',(now,))]
+
+    def retry_expiring(self,uid,mid,when):
+        with self.db() as c:c.execute('UPDATE expiring_messages SET next_attempt=? WHERE user_id=? AND message_id=?',(when,uid,mid))

@@ -9,6 +9,7 @@ from .gemini import Gemini,GeminiError
 from .provod import Provod
 from .analysis_policy import Analysis,SYSTEM,REVIEW,review_reasons
 from .research import PublicResearch
+from .folders import primary_folder,single_folder_analysis
 
 TYPE_LABELS={'essay':'Сочинения','сочинение':'Сочинения','сочинения':'Сочинения',
              'задачи':'Задачи','задача':'Задачи','конспект':'Конспекты','лекция':'Лекции',
@@ -95,9 +96,11 @@ def canonical_groups(kind,subject,proposed,fallback):
     name=TYPE_LABELS.get(kind.lower())
     normalized=SUBJECTS.get(subject.lower(),subject.strip())
     if name and normalized:return [normalized+' / '+name]
-    if name:return list(dict.fromkeys([*fallback,name]))[:3] if fallback and kind not in ('сочинение','essay','сочинения') else [name]
+    if name:
+        domain=primary_folder(fallback)
+        return [domain[0]+' / '+name] if domain and '/' not in name and domain[0]!=name else [name]
     if normalized in SUBJECTS.values():return [normalized]
-    return list(dict.fromkeys(proposed or fallback))[:3]
+    return primary_folder(proposed or fallback)
 
 # Generic fallback concepts; proposed public terms also pass the research privacy filter.
 PUBLIC_QUERIES={
@@ -128,7 +131,7 @@ class PersonalAnalyzer:
             result['elapsed_ms']=round((time.monotonic()-start)*1000)
             return result
         memories=self.store.memories(item['user_id'])
-        fingerprint={'policy':'vision-v2','provider':self.config.ai_provider,'model':self.config.gemini_model,
+        fingerprint={'policy':'vision-v3-single-folder','provider':self.config.ai_provider,'model':self.config.gemini_model,
                      'web':self.config.web_lookup,'digest':item.get('digest',''),'kind':item['kind'],
                      'title':item['title'] if not is_file else '', 'body':item['body'],'context':item['context'],
                      'groups':item['groups_json'] if item['manual_groups'] else '',
@@ -176,6 +179,7 @@ class PersonalAnalyzer:
         if enough:
             content='\n'.join(part[:1400] for part in re.split(r'\[Страница \d+\]',item['body'])[:5])[:6500]
             payload={'filename_or_title':item['title'],'content':content,'user_explanation':context[:1600],
+                     'existing_folders':self.store.folder_names(item['user_id'])[:24],
                      'personal_examples':examples,'current_manual_groups':json.loads(item['groups_json']) if item['manual_groups'] else [],
                      'public_type_reference':reference.get('sources',[])[:2]}
             system=SYSTEM
@@ -271,7 +275,7 @@ class PersonalAnalyzer:
             mk,ms=grounded_features(m['body'],m['context'])
             if m['manual_groups'] and mk and mk==result.document_type and ((ms and ms==result.subject) or similarity>=.65):
                 preferred.append(tuple(json.loads(m['groups_json'])))
-        if preferred and len(set(preferred))==1:result.groups=list(preferred[0])[:3]
-        d=result.model_dump();d.update(method=method,model=self.config.gemini_model if method=='gemini' else self.config.chat_model if method=='local_model' else '',memory_examples_used=len(examples),cloud=cloud_meta)
+        if preferred and len(set(preferred))==1:result.groups=primary_folder(preferred[0])
+        d=single_folder_analysis(result.model_dump());d.update(method=method,model=self.config.gemini_model if method=='gemini' else self.config.chat_model if method=='local_model' else '',memory_examples_used=len(examples),cloud=cloud_meta)
         d['web']=reference
         return d

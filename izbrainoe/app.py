@@ -26,7 +26,7 @@ class Note(BaseModel):
 class Change(BaseModel):
     title: str | None = Field(default=None,min_length=1,max_length=200)
     context: str | None = Field(default=None,max_length=10000)
-    groups: list[str] | None = Field(default=None,max_length=5)
+    groups: list[str] | None = Field(default=None,max_length=1)
     automatic: bool = False
 
 class VaultBody(BaseModel):
@@ -40,6 +40,9 @@ class GeminiSettings(BaseModel):
 class ProvodSettings(BaseModel):
     key: SecretStr = SecretStr('')
     monthly_limit_rub: float = Field(default=1000,ge=1,le=100000,allow_inf_nan=False)
+
+class VaultBotAccess(BaseModel):
+    password: SecretStr
 
 def create_app(config=None):
     config=config or Config.load()
@@ -137,6 +140,7 @@ def create_app(config=None):
                 'memory_examples':len(store.memories(uid)),'learning':store.learning_state(uid),
                 'web_lookup':config.web_lookup,'pdf_pages':config.pdf_pages,'max_upload_mb':config.max_upload_mb,
                 'analysis_provider':config.ai_provider,'analysis_model':config.gemini_model if config.ai_provider in ('gemini','provod') else config.chat_model,
+                'search_provider':'gemini' if config.ai_provider in ('gemini','provod') else 'local' if processor.ai_ready else 'keyword',
                 'gemini':processor.analyzer.gemini.status() if local_session(request) else None,
                 'provod':processor.analyzer.provod.status() if local_session(request) else None,
                 'pair_link':f'https://t.me/{config.bot_username}?start={store.meta("pair_code")}' if local_session(request) and not owner else None}
@@ -302,7 +306,27 @@ def create_app(config=None):
         return {'ok':True}
 
     @app.get('/api/vault')
-    async def vault(uid=Depends(user)): return store.vault(uid)
+    async def vault(request:Request,uid=Depends(user)):
+        return {**store.vault(uid),'bot_access':await bot.vault_access.enabled(uid),
+                'bot_access_requested':store.meta(f'vault_bot_{uid}')!='0','local_bot_setup':bool(local_session(request) and uid>0)}
+
+    @app.post('/api/vault/bot-access')
+    async def enable_vault_bot(request:Request,body:VaultBotAccess,uid=Depends(user)):
+        if not local_session(request):raise HTTPException(403,'Включить выдачу паролей можно только в приложении на Mac.')
+        if uid<=0:raise HTTPException(409,'Сначала подключи владельца через Telegram в настройках.')
+        if not 8<=len(body.password.get_secret_value())<=1000:raise HTTPException(400,'Главный пароль должен содержать от 8 до 1000 символов.')
+        from .vault_access import VaultAccessError
+        try:await bot.vault_access.enable(uid,body.password.get_secret_value())
+        except VaultAccessError as error:raise HTTPException(400,str(error)) from None
+        return {'enabled':True}
+
+    @app.delete('/api/vault/bot-access')
+    async def disable_vault_bot(request:Request,uid=Depends(user)):
+        if not local_session(request):raise HTTPException(403,'Выключить доступ можно на Mac.')
+        from .vault_access import VaultAccessError
+        try:await bot.vault_access.disable(uid)
+        except VaultAccessError as error:return {'enabled':False,'warning':str(error)}
+        return {'enabled':False}
 
     @app.put('/api/vault')
     async def vault_save(body:VaultBody,uid=Depends(user)):

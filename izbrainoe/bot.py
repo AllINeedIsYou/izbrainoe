@@ -4,9 +4,11 @@ import re
 import secrets
 import time
 import json
+import html
 from pathlib import Path
 import httpx
 from .processing import sensitive,delete_intent
+from .vault_access import VaultAccess,VaultAccessError,credential_matches
 
 class TelegramError(Exception): pass
 
@@ -17,6 +19,7 @@ class Bot:
         self.running=False; self.error=''; self.tasks=set()
         self.batch_users=set();self.batch_saved={};self.clear_locks={}
         self.media_limit=asyncio.Semaphore(3)
+        self.vault_access=VaultAccess(store)
 
     async def call(self, method, **data):
         try:
@@ -114,9 +117,9 @@ class Bot:
     async def results(self, uid, query, offset=0):
         data=await self.processor.search(uid,query,offset=offset,limit=4)
         if not data['items']:
-            await self.send(uid,'Пока ничего не нашлось. Попробуй название, фразу из материала или другое описание.')
+            await self.send(uid,(data.get('warning','')+'\n' if data.get('warning') else '')+'Пока ничего не нашлось. Попробуй название, фразу из материала или другое описание.')
             return
-        await self.send(uid,f'Нашлось: {data["total"]}. '+('Поиск по словам и описанию.' if data['mode']=='hybrid' else 'Сейчас ищу по словам.'))
+        await self.send(uid,f'Нашлось: {data["total"]}. '+('Поиск по смыслу через Gemini.' if data['mode']=='gemini' else 'Поиск по словам и описанию.' if data['mode']=='hybrid' else 'Сейчас ищу по словам.')+('\n'+data['warning'] if data.get('warning') else ''))
         for i in data['items']:
             markup={'inline_keyboard':[[{'text':'Получить оригинал','callback_data':'get:'+i['id']},
                                        {'text':'Добавить контекст','callback_data':'ctx:'+i['id']}]]}
@@ -125,6 +128,52 @@ class Bot:
             # Query state is per-user; don't put arbitrary query text in callback data.
             self.store.meta(f'query_{uid}',query)
             await self.send(uid,'Ещё результаты',{'inline_keyboard':[[{'text':'Показать ещё','callback_data':f'more:{offset+4}'}]]})
+
+    async def vault_lookup(self,uid,text):
+        if not self.store.vault(uid)['envelope']:return False
+        explicit=bool(re.search(r'\b(?:данные|логин|парол\w*|аккаунт\w*)\b',text,re.I))
+        if self.store.meta(f'vault_bot_{uid}')!='1':
+            if explicit:
+                await self.send(uid,'Открой раздел «Пароли» на Mac и разблокируй хранилище с включённой выдачей в Telegram. Потом напиши, например, «данные рхту».')
+            return explicit
+        try:entries=await self.vault_access.entries(uid)
+        except VaultAccessError:
+            if explicit:await self.send(uid,'Доступ к паролям сейчас закрыт. Разблокируй хранилище на Mac и включи выдачу в Telegram.')
+            return explicit
+        matches=credential_matches(text,entries)
+        if not matches:
+            if explicit:await self.send(uid,'Не нашёл такой аккаунт. Укажи название сервиса из раздела «Пароли».')
+            return explicit
+        self.store.mode(uid,'')
+        if len(matches)>1:
+            await self.send(uid,'Нашёл несколько аккаунтов. Уточни полное название:\n'+'\n'.join(str(e.get('title',''))[:120] for e in matches[:8]))
+            return True
+        entry=matches[0]
+        title=html.escape(str(entry.get('title',''))[:120])
+        login=html.escape(str(entry.get('login',''))[:300])
+        password=html.escape(str(entry.get('password',''))[:2000])
+        result=await self.call('sendMessage',chat_id=uid,
+            text=f'{title}\n<tg-spoiler>Логин: {login}\nПароль: {password}</tg-spoiler>\n\nУдалю это сообщение через 5 минут.',
+            parse_mode='HTML',reply_markup=self.keyboard())
+        self.store.record_outgoing(uid,result)
+        self.store.expire_message(uid,result['message_id'],time.time()+300)
+        return True
+
+    async def expire_due(self):
+        for row in self.store.due_messages(time.time()):
+            uid,mid=row['user_id'],row['message_id']
+            try:
+                await self.call('deleteMessage',chat_id=uid,message_id=mid)
+                self.store.forget_chat_messages(uid,[mid])
+            except TelegramError as error:
+                if 'not found' in str(error).lower():self.store.forget_chat_messages(uid,[mid])
+                else:self.store.retry_expiring(uid,mid,time.time()+30)
+
+    async def expiry_loop(self):
+        while True:
+            try:await self.expire_due()
+            except Exception:self.error='Автоудаление временно недоступно. Повторю попытку.'
+            await asyncio.sleep(1)
 
     async def download(self, uid, file, filename):
         if file.get('file_size',0)>20*1024*1024:
@@ -226,6 +275,12 @@ class Bot:
                 for i in self.store.list(uid):
                     for g in i['groups'] or ['Неразобранное']: groups[g]=groups.get(g,0)+1
                 await self.send(uid,'\n'.join(f'{g}: {n}' for g,n in groups.items())+'\n\nПодборки с просмотром файлов готовы на Mac. Для телефона нужно подключить HTTPS-адрес.' if groups else 'Пока пусто. Перешли первый материал.')
+            return
+        if (m.get('text') and not m.get('forward_origin') and not m.get('forward_date')
+                and not any(k in m for k in ('photo','document','video','voice','audio','animation'))
+                and not m.get('reply_to_message') and self.store.mode(uid) in ('','search')
+                and await self.vault_lookup(uid,text)):
+            self.store.record_service(uid,m)
             return
         if any(k in m for k in ('video','video_note','animation')):
             await self.send(uid,'Видео пока не поддерживаются. Можно сохранить ссылку или текстовое пояснение.'); return
@@ -375,6 +430,7 @@ class Bot:
                 for uid in users:
                     await self.configure_menu(uid)
             self.running=True
+            expiry=asyncio.create_task(self.expiry_loop());self.tasks.add(expiry);expiry.add_done_callback(self.tasks.discard)
             while True:
                 try:
                     updates=await self.call('getUpdates',offset=offset,timeout=25,allowed_updates=['message','edited_message','callback_query'])
