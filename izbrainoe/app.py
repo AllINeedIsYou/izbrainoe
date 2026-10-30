@@ -19,6 +19,7 @@ from .processing import Processor, sensitive,delete_intent
 from .auth import validate_telegram
 from .bot import Bot, TelegramError
 from .folders import document_category
+from .phone_access import PhoneAccess
 
 class Note(BaseModel):
     text: str = Field(min_length=1,max_length=50000)
@@ -45,9 +46,11 @@ class ProvodSettings(BaseModel):
 class VaultBotAccess(BaseModel):
     password: SecretStr
 
-def create_app(config=None):
+def create_app(config=None,manage_phone=False):
     config=config or Config.load()
     store=Store(config.data_dir); processor=Processor(config,store); bot=Bot(config,store,processor)
+    instance=secrets.token_hex(16)
+    phone=PhoneAccess(config,bot,instance,managed=manage_phone)
     tasks=set()
 
     async def review_done(uid,checked,changed):
@@ -69,14 +72,17 @@ def create_app(config=None):
     async def lifespan(app):
         await processor.probe()
         task=background(bot.run())
+        background(phone.run())
         yield
         for t in list(tasks): t.cancel()
         await asyncio.gather(*tasks,return_exceptions=True)
         await processor.close()
         await bot.close()
+        await phone.close()
 
     app=FastAPI(title='Изbrainое',lifespan=lifespan,docs_url=None,redoc_url=None,openapi_url=None)
     app.state.store=store; app.state.processor=processor; app.state.bot=bot
+    app.state.phone=phone
 
     def local(request):
         host=urlparse('http://'+request.headers.get('host','')).hostname
@@ -122,7 +128,7 @@ def create_app(config=None):
         return response
 
     @app.get('/health')
-    async def health(): return {'ok':True,'app':'Изbrainое'}
+    async def health(): return {'ok':True,'app':'Изbrainое','instance':instance}
 
     @app.get('/api/me')
     async def me(request:Request,uid=Depends(user)):
@@ -140,6 +146,7 @@ def create_app(config=None):
                 'groups':groups,'group_types':group_types,'total':len(rows),'bot_username':config.bot_username,
                 'bot_configured':bool(config.token),'bot_running':bot.running,'bot_error':bot.error,
                 'public_url':config.public_url,'ai_ready':processor.ai_ready,'ai_error':processor.ai_error,
+                'phone_access':phone.status(),
                 'chat_model':bool(config.chat_model),'ocr_ready':(ROOT/'runtime'/'ocr').exists(),
                 'voice_ready':processor.voice_ready(),'paired':bool(owner),
                 'memory_examples':len(store.memories(uid)),'learning':store.learning_state(uid),
@@ -149,6 +156,12 @@ def create_app(config=None):
                 'gemini':processor.analyzer.gemini.status() if local_session(request) else None,
                 'provod':processor.analyzer.provod.status() if local_session(request) else None,
                 'pair_link':f'https://t.me/{config.bot_username}?start={store.meta("pair_code")}' if local_session(request) and not owner else None}
+
+    @app.post('/api/network/reconnect')
+    async def reconnect_phone(request:Request,uid=Depends(user)):
+        if not local_session(request):raise HTTPException(403,'Восстановление подключения доступно на Mac.')
+        phone.request_restart()
+        return {'ok':True,'phone_access':phone.status()}
 
     @app.post('/api/ai/gemini')
     async def connect_gemini(request:Request,body:GeminiSettings,uid=Depends(user)):

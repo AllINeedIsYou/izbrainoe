@@ -5,6 +5,7 @@ final class Launcher: NSObject, NSApplicationDelegate {
     var status: NSTextField!
     var openButton: NSButton!
     var stopButton: NSButton!
+    var reconnectButton: NSButton!
     var busy = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -15,7 +16,7 @@ final class Launcher: NSObject, NSApplicationDelegate {
         appMenu.addItem(withTitle: "Закрыть окно Изbrainого", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         item.submenu = appMenu
         NSApp.mainMenu = menu
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 270),
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 310),
                           styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
         window.title = "Изbrainое"
         window.isReleasedWhenClosed = false
@@ -23,20 +24,24 @@ final class Launcher: NSObject, NSApplicationDelegate {
         let view = window.contentView!
         let title = NSTextField(labelWithString: "Твоя внешняя память")
         title.font = .systemFont(ofSize: 23, weight: .semibold)
-        title.frame = NSRect(x: 30, y: 207, width: 440, height: 32)
+        title.frame = NSRect(x: 30, y: 247, width: 440, height: 32)
         view.addSubview(title)
         status = NSTextField(wrappingLabelWithString: "Запускаю бота и подключаю Telegram…")
-        status.frame = NSRect(x: 30, y: 135, width: 440, height: 56)
+        status.frame = NSRect(x: 30, y: 171, width: 440, height: 66)
         status.font = .systemFont(ofSize: 14)
         view.addSubview(status)
         openButton = NSButton(title: "Открыть подборки", target: self, action: #selector(openApp))
         openButton.bezelStyle = .rounded
-        openButton.frame = NSRect(x: 25, y: 86, width: 235, height: 36)
+        openButton.frame = NSRect(x: 25, y: 126, width: 235, height: 36)
         view.addSubview(openButton)
         stopButton = NSButton(title: "Остановить бота", target: self, action: #selector(stopApp))
         stopButton.bezelStyle = .rounded
-        stopButton.frame = NSRect(x: 270, y: 86, width: 205, height: 36)
+        stopButton.frame = NSRect(x: 270, y: 126, width: 205, height: 36)
         view.addSubview(stopButton)
+        reconnectButton = NSButton(title: "Восстановить подключение с телефона", target: self, action: #selector(reconnectPhone))
+        reconnectButton.bezelStyle = .rounded
+        reconnectButton.frame = NSRect(x: 25, y: 81, width: 450, height: 34)
+        view.addSubview(reconnectButton)
         let note = NSTextField(wrappingLabelWithString: "Окно можно закрыть — бот продолжит работать.\nMac должен быть включён, подключён к интернету и не спать.")
         note.font = .systemFont(ofSize: 12)
         note.textColor = .secondaryLabelColor
@@ -45,6 +50,9 @@ final class Launcher: NSObject, NSApplicationDelegate {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         run("start", openBrowser: true)
+        Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { _ in
+            if !self.busy { self.run("status", openBrowser: false) }
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
@@ -57,13 +65,17 @@ final class Launcher: NSObject, NSApplicationDelegate {
 
     @objc func openApp() { run("start", openBrowser: true) }
     @objc func stopApp() { run("stop", openBrowser: false) }
+    @objc func reconnectPhone() { run("reconnect", openBrowser: false) }
 
     func run(_ action: String, openBrowser: Bool) {
         if busy { return }
         busy = true
         openButton.isEnabled = false
         stopButton.isEnabled = false
-        status.stringValue = action == "stop" ? "Останавливаю бота…" : "Подключаю Telegram и открываю подборки… Первый запуск может занять около минуты."
+        reconnectButton.isEnabled = false
+        if action != "status" {
+            status.stringValue = action == "stop" ? "Останавливаю бота…" : "Проверяю Telegram и доступ с телефона… Подключение может занять около минуты."
+        }
         DispatchQueue.global(qos: .userInitiated).async {
             var result: [String: Any] = [:]
             do {
@@ -88,14 +100,17 @@ final class Launcher: NSObject, NSApplicationDelegate {
                 self.busy = false
                 self.openButton.isEnabled = true
                 self.stopButton.isEnabled = response["running"] as? Bool == true
+                self.reconnectButton.isEnabled = response["running"] as? Bool == true
                 if let error = response["error"] as? String {
                     self.status.stringValue = error
                     return
                 }
                 let running = response["running"] as? Bool == true
                 let bot = response["bot_running"] as? Bool == true
+                let phoneRequired = response["phone_required"] as? Bool == true
+                let phoneReady = response["phone_ready"] as? Bool == true
                 self.openButton.title = running ? "Открыть подборки" : "Запустить бота"
-                self.status.stringValue = bot ? "Бот работает. Можно отправлять материалы в Telegram." : running ? "Приложение открыто. Telegram ещё не подключён — проверь интернет и статус в настройках." : "Бот остановлен. Материалы и настройки сохранены."
+                self.status.stringValue = bot ? (phoneRequired && !phoneReady ? "Чат-бот подключён. Подборки на телефоне пока недоступны — восстанавливаю соединение." : phoneReady ? "Бот и подборки на телефоне доступны." : "Бот подключён. Подборки доступны на этом Mac.") : running ? "Приложение открыто. Telegram ещё не подключён — проверь интернет и статус в настройках." : "Бот остановлен. Материалы и настройки сохранены."
                 if openBrowser, let raw = response["url"] as? String, let url = URL(string: raw) {
                     NSWorkspace.shared.open(url)
                 }

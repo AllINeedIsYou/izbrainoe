@@ -16,7 +16,7 @@ class Bot:
     def __init__(self, config, store, processor):
         self.config=config; self.store=store; self.processor=processor
         self.client=httpx.AsyncClient(timeout=45)
-        self.running=False; self.error=''; self.tasks=set()
+        self.running=False; self.error=''; self.tasks=set();self.verified=False
         self.batch_users=set();self.batch_saved={};self.clear_locks={}
         self.media_limit=asyncio.Semaphore(3)
         self.vault_access=VaultAccess(store)
@@ -33,6 +33,8 @@ class Bot:
         except httpx.HTTPError:
             # httpx exception strings contain the token-bearing URL. Never log them.
             raise TelegramError('Нет соединения с Telegram') from None
+        except (ValueError,TypeError,KeyError,AttributeError):
+            raise TelegramError('Telegram вернул некорректный ответ. Повторю подключение.') from None
 
     def keyboard(self):
         return {'keyboard':[[{'text':'🔎 Найти'},{'text':'🗂 Подборки'}]],'resize_keyboard':True,'is_persistent':True}
@@ -45,6 +47,13 @@ class Bot:
         if self.config.public_url:
             await self.call('setChatMenuButton',chat_id=uid,menu_button={
                 'type':'web_app','text':'Подборки','web_app':{'url':self.config.public_url}})
+
+    async def refresh_menus(self):
+        if not self.config.public_url:return
+        await self.call('setChatMenuButton',menu_button={'type':'web_app','text':'Подборки','web_app':{'url':self.config.public_url}})
+        with self.store.db() as c:
+            users={r[0] for r in c.execute('SELECT id FROM users')} | set(self.config.allowed_ids)
+        for uid in users:await self.configure_menu(uid)
 
     async def send(self, uid, text, markup=None, **kw):
         result=await self.call('sendMessage',chat_id=uid,text=text[:4000],reply_markup=markup or self.keyboard(),**kw)
@@ -413,35 +422,36 @@ class Bot:
             self.batch_users=set();self.batch_saved={}
 
     async def run(self):
-        if not self.config.token: return
+        if not self.config.token:return
         offset=int(self.store.meta('update_offset') or 0)
+        expiry=asyncio.create_task(self.expiry_loop());self.tasks.add(expiry);expiry.add_done_callback(self.tasks.discard)
         try:
-            me=await self.call('getMe')
-            if me.get('username','').lower()!=self.config.bot_username.lower():
-                self.error='Токен принадлежит другому боту'; return
-            webhook=await self.call('getWebhookInfo')
-            if webhook.get('url'):
-                self.error='У бота уже настроен webhook. Отключите его перед локальным запуском.'; return
-            await self.call('setMyCommands',commands=[{'command':'start','description':'Начать'},{'command':'help','description':'Как пользоваться'},{'command':'clear','description':'Убрать команды и ответы, сохранить архив'},{'command':'cancel','description':'Отменить ввод'}])
-            if self.config.public_url:
-                await self.call('setChatMenuButton',menu_button={'type':'web_app','text':'Подборки','web_app':{'url':self.config.public_url}})
-                with self.store.db() as c:
-                    users={r[0] for r in c.execute('SELECT id FROM users')} | set(self.config.allowed_ids)
-                for uid in users:
-                    await self.configure_menu(uid)
-            self.running=True
-            expiry=asyncio.create_task(self.expiry_loop());self.tasks.add(expiry);expiry.add_done_callback(self.tasks.discard)
             while True:
                 try:
-                    updates=await self.call('getUpdates',offset=offset,timeout=25,allowed_updates=['message','edited_message','callback_query'])
-                    await self.handle_updates(updates)
-                    if updates:
-                        offset=updates[-1]['update_id']+1;self.store.meta('update_offset',offset)
+                    me=await self.call('getMe')
+                    if me.get('username','').lower()!=self.config.bot_username.lower():
+                        self.error='Токен принадлежит другому боту';return
+                    webhook=await self.call('getWebhookInfo')
+                    if webhook.get('url'):
+                        self.error='У бота уже настроен webhook. Отключите его перед локальным запуском.';return
+                    self.verified=True
+                    await self.call('setMyCommands',commands=[{'command':'start','description':'Начать'},{'command':'help','description':'Как пользоваться'},{'command':'clear','description':'Убрать команды и ответы, сохранить архив'},{'command':'cancel','description':'Отменить ввод'}])
+                    await self.refresh_menus()
+                    self.running=True;self.error=''
+                    while True:
+                        try:
+                            updates=await self.call('getUpdates',offset=offset,timeout=25,allowed_updates=['message','edited_message','callback_query'])
+                            self.running=True;self.error=''
+                            await self.handle_updates(updates)
+                            if updates:
+                                offset=updates[-1]['update_id']+1;self.store.meta('update_offset',offset)
+                        except TelegramError:
+                            self.running=False
+                            self.error='Нет соединения с Telegram или бот запущен в другом месте'
+                            await asyncio.sleep(5)
                 except TelegramError:
-                    self.error='Нет соединения с Telegram или бот запущен в другом месте'
+                    self.running=False;self.error='Не удалось подключиться к Telegram. Повторю попытку.'
                     await asyncio.sleep(5)
-        except TelegramError as e:
-            self.error=str(e)
         finally:
             self.running=False
 

@@ -60,3 +60,14 @@ def test_corrupt_pid_file_is_safe(tmp_path):
     assert desktop.server_pid(tmp_path) is None
     (tmp_path / 'server.pid').write_text('invalid')
     assert desktop.server_pid(tmp_path) is None
+
+
+def test_chat_connection_does_not_mean_phone_app_is_ready(tmp_path,monkeypatch):
+    connecting={'running':True,'bot_running':True,'bot_configured':True,'bot_error':False,
+                'phone_required':True,'phone_ready':False}
+    ready={**connecting,'phone_ready':True}
+    states=iter([connecting,connecting,ready])
+    monkeypatch.setattr(desktop,'local_state',lambda config:next(states))
+    monkeypatch.setattr(desktop.time,'sleep',lambda delay:None)
+    assert not desktop.fully_ready(connecting)
+    assert desktop.start(SimpleNamespace(data_dir=tmp_path))==ready

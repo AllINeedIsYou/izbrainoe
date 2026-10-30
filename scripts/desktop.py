@@ -44,9 +44,16 @@ def local_state(config):
             me = response.json()
         return {'running': True, 'bot_running': bool(me.get('bot_running')),
                 'bot_configured': bool(me.get('bot_configured')), 'bot_error': bool(me.get('bot_error')),
+                'phone_required': bool(me.get('phone_access',{}).get('required')),
+                'phone_ready': bool(me.get('phone_access',{}).get('ready')),
+                'phone_error': me.get('phone_access',{}).get('error',''),
                 'url': base + '/local?key=' + row[0]}
     except (OSError, sqlite3.Error, httpx.HTTPError, ValueError):
         return None
+
+
+def fully_ready(state):
+    return bool(state and state.get('bot_running') and (not state.get('phone_required') or state.get('phone_ready')))
 
 
 def start(config, timeout=110):
@@ -54,7 +61,7 @@ def start(config, timeout=110):
     with (config.data_dir / 'desktop.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         state = local_state(config)
-        if state and state['bot_running']:
+        if fully_ready(state):
             return state
         if not state and not server_pid(config.data_dir):
             with (config.data_dir / 'server.log').open('a') as log:
@@ -64,12 +71,24 @@ def start(config, timeout=110):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             state = local_state(config)
-            if state and (state['bot_running'] or not state['bot_configured'] or state['bot_error']):
+            if state and (fully_ready(state) or not state['bot_configured'] or state['bot_error']):
                 return state
             time.sleep(.5)
         if state:
             return state
         raise RuntimeError('Не удалось запустить приложение. Проверь интернет и повтори запуск. Подробности — в data/server.log.')
+
+
+def reconnect(config):
+    state=local_state(config)
+    if state:
+        with sqlite3.connect(config.data_dir/'izbrainoe.sqlite3') as db:
+            key=db.execute("SELECT value FROM meta WHERE key='local_key'").fetchone()[0]
+        with httpx.Client(base_url=f'http://127.0.0.1:{config.port}',cookies={'iz_session':key},
+                          headers={'X-Iz-Request':'1'},timeout=5,trust_env=False) as client:
+            response=client.post('/api/network/reconnect')
+            if not response.is_success:raise RuntimeError('Не удалось запросить восстановление. Перезапусти бота кнопкой остановки и запуска.')
+    return start(config)
 
 
 def stop(config, timeout=25):
@@ -96,6 +115,8 @@ def main():
             result = stop(config)
         elif action == 'status':
             result = local_state(config) or {'running': False, 'bot_running': False}
+        elif action == 'reconnect':
+            result = reconnect(config)
         else:
             raise RuntimeError('Неизвестное действие запуска.')
         print(json.dumps(result, ensure_ascii=False))
