@@ -34,6 +34,7 @@ class Change(BaseModel):
 class VaultBody(BaseModel):
     version: int = Field(ge=0)
     envelope: dict
+    lookup_tokens: list[list[str]] | None = Field(default=None,max_length=1000)
 
 class GeminiSettings(BaseModel):
     key: SecretStr = SecretStr('')
@@ -44,7 +45,13 @@ class ProvodSettings(BaseModel):
     monthly_limit_rub: float = Field(default=1000,ge=1,le=100000,allow_inf_nan=False)
 
 class VaultBotAccess(BaseModel):
-    password: SecretStr
+    password: SecretStr | None = None
+    wrapped_key: SecretStr | None = None
+    nonce: str = Field(default='',max_length=100)
+    lookup_tokens: list[list[str]] | None = Field(default=None,max_length=1000)
+
+def valid_lookup(tokens):
+    return tokens is None or all(len(entry)<=64 and all(re.fullmatch(r'[a-f0-9]{64}',word) for word in entry) for entry in tokens)
 
 def create_app(config=None,manage_phone=False):
     config=config or Config.load()
@@ -55,7 +62,7 @@ def create_app(config=None,manage_phone=False):
 
     async def review_done(uid,checked,changed):
         if config.token and uid>0 and store.allowed(uid,config.allowed_ids):
-            await bot.send(uid,f'Проверил похожие материалы: {checked}. Обновил подборки у {changed}. Ручные подборки сохранил.')
+            await bot.send(uid,f'Проверил похожие материалы: {checked}. Обновил подборки у {changed}. Ручные подборки сохранил.',ttl=5)
     processor.review_notifier=review_done
 
     def background(coro):
@@ -326,21 +333,38 @@ def create_app(config=None,manage_phone=False):
     @app.get('/api/vault')
     async def vault(request:Request,uid=Depends(user)):
         return {**store.vault(uid),'bot_access':await bot.vault_access.enabled(uid),
-                'bot_access_requested':store.meta(f'vault_bot_{uid}')!='0','local_bot_setup':bool(local_session(request) and uid>0)}
+                'bot_access_requested':store.meta(f'vault_bot_{uid}')!='0','local_bot_setup':bool(local_session(request) and uid>0),
+                'bot_setup_allowed':uid>0}
+
+    @app.get('/api/vault/bot-access-key')
+    async def vault_handoff(uid=Depends(user)):
+        if uid<=0:raise HTTPException(409,'Сначала подключи владельца через Telegram в настройках.')
+        from .vault_access import VaultAccessError
+        try:return await bot.vault_access.handoff_key(uid)
+        except VaultAccessError as error:raise HTTPException(400,str(error)) from None
 
     @app.post('/api/vault/bot-access')
     async def enable_vault_bot(request:Request,body:VaultBotAccess,uid=Depends(user)):
-        if not local_session(request):raise HTTPException(403,'Включить выдачу паролей можно только в приложении на Mac.')
         if uid<=0:raise HTTPException(409,'Сначала подключи владельца через Telegram в настройках.')
-        if not 8<=len(body.password.get_secret_value())<=1000:raise HTTPException(400,'Главный пароль должен содержать от 8 до 1000 символов.')
+        if not valid_lookup(body.lookup_tokens):raise HTTPException(400,'Повреждён указатель названий сервисов.')
         from .vault_access import VaultAccessError
-        try:await bot.vault_access.enable(uid,body.password.get_secret_value())
+        try:
+            if body.wrapped_key is not None:
+                value=body.wrapped_key.get_secret_value()
+                if not 100<=len(value)<=1000:raise HTTPException(400,'Повреждён зашифрованный ключ.')
+                await bot.vault_access.enable_wrapped(uid,value,body.nonce)
+            elif body.password is not None:
+                # Compatibility for old local windows. Phones send only a wrapped key.
+                if not local_session(request):raise HTTPException(403,'Обнови приложение: телефон должен передавать зашифрованный ключ.')
+                if not 8<=len(body.password.get_secret_value())<=1000:raise HTTPException(400,'Главный пароль должен содержать от 8 до 1000 символов.')
+                await bot.vault_access.enable(uid,body.password.get_secret_value())
+            else:raise HTTPException(400,'Нужен зашифрованный ключ хранилища.')
         except VaultAccessError as error:raise HTTPException(400,str(error)) from None
+        if body.lookup_tokens is not None:store.vault_lookup_index(uid,body.lookup_tokens)
         return {'enabled':True}
 
     @app.delete('/api/vault/bot-access')
     async def disable_vault_bot(request:Request,uid=Depends(user)):
-        if not local_session(request):raise HTTPException(403,'Выключить доступ можно на Mac.')
         from .vault_access import VaultAccessError
         try:await bot.vault_access.disable(uid)
         except VaultAccessError as error:return {'enabled':False,'warning':str(error)}
@@ -348,6 +372,7 @@ def create_app(config=None,manage_phone=False):
 
     @app.put('/api/vault')
     async def vault_save(body:VaultBody,uid=Depends(user)):
+        if not valid_lookup(body.lookup_tokens):raise HTTPException(400,'Повреждён указатель названий сервисов.')
         e=body.envelope
         if set(e)!=set(('v','kdf','iterations','salt','iv','ciphertext')) or e.get('v')!=1 or e.get('kdf')!='PBKDF2-SHA256' or e.get('iterations')!=600000:
             raise HTTPException(400,'Неподдерживаемый формат шифрования.')
@@ -355,7 +380,7 @@ def create_app(config=None,manage_phone=False):
             lengths={k:len(base64.b64decode(e[k],validate=True)) for k in ('salt','iv','ciphertext')}
             if lengths['salt']!=16 or lengths['iv']!=12 or not 16<=lengths['ciphertext']<=2000000: raise ValueError()
         except (ValueError,TypeError): raise HTTPException(400,'Повреждён зашифрованный блок.')
-        if not store.save_vault(uid,body.version,e): raise HTTPException(409,'Хранилище изменилось на другом устройстве. Заблокируйте и откройте его заново.')
+        if not store.save_vault(uid,body.version,e,body.lookup_tokens): raise HTTPException(409,'Хранилище изменилось на другом устройстве. Заблокируйте и откройте его заново.')
         return {'version':body.version+1}
 
     @app.post('/api/invite')

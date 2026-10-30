@@ -47,9 +47,13 @@ func handle(_ request: [String: Any]) throws -> [String: Any] {
     }
     guard let envelope = request["envelope"] as? [String: Any],
           let saltText = envelope["salt"] as? String, let salt = Data(base64Encoded: saltText), salt.count == 16 else { throw VaultError.invalid }
-    if operation == "enable" {
-        guard let password = request["password"] as? String, password.utf16.count >= 8 else { throw VaultError.invalid }
+    if operation == "enable" || operation == "enable_key" {
         var key = Data(count: 32)
+        if operation == "enable_key" {
+            guard let supplied = Data(base64Encoded: request["key"] as? String ?? ""), supplied.count == 32 else { throw VaultError.invalid }
+            key = supplied
+        } else {
+        guard let password = request["password"] as? String, password.utf16.count >= 8 else { throw VaultError.invalid }
         let code = key.withUnsafeMutableBytes { output in
             salt.withUnsafeBytes { saltBytes in
                 password.withCString { passwordBytes in
@@ -60,8 +64,9 @@ func handle(_ request: [String: Any]) throws -> [String: Any] {
                 }
             }
         }
-        defer { key.resetBytes(in: 0..<key.count) }
         guard code == kCCSuccess else { throw VaultError.invalid }
+        }
+        defer { key.resetBytes(in: 0..<key.count) }
         do { _ = try open(envelope, key: key) } catch { throw VaultError.wrongPassword }
         let data = try JSONSerialization.data(withJSONObject: ["key": key.base64EncodedString(), "salt": saltText])
         let attributes = [kSecValueData as String: data]

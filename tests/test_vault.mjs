@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {derive,encryptVault,decryptVault} from '../izbrainoe/static/vault.js';
+import {derive,encryptVault,decryptVault,wrapBotKey,lookupTokens,b64} from '../izbrainoe/static/vault.js';
 const fakePassword='test-only-never-a-real-password';
 const entries=[{id:'test',title:'Вымышленный сервис',login:'test@example.invalid',password:'FAKE_SECRET_FOR_TEST_ONLY'}];
 const salt=crypto.getRandomValues(new Uint8Array(16));
@@ -19,3 +19,16 @@ const changed=await encryptVault(await derive(shortPassword,newSalt),newSalt,ent
 assert.deepEqual((await decryptVault(shortPassword,changed)).entries,entries);
 await assert.rejects(decryptVault(fakePassword,changed));
 console.log('Шифрование: 10 проверок пройдено, включая пароль из 8 символов и смену ключа.');
+const pair=await crypto.subtle.generateKey({name:'RSA-OAEP',modulusLength:2048,publicExponent:new Uint8Array([1,0,1]),hash:'SHA-256'},true,['encrypt','decrypt']);
+const challenge={spki:b64(await crypto.subtle.exportKey('spki',pair.publicKey)),nonce:'TEST_ONLY_NONCE',version:2};
+const grant=await wrapBotKey(fakePassword,a.salt,challenge,2);
+assert.ok(!JSON.stringify(grant).includes(fakePassword));
+const clear=JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({name:'RSA-OAEP'},pair.privateKey,Uint8Array.from(atob(grant.wrapped_key),c=>c.charCodeAt(0)))));
+assert.equal(clear.nonce,challenge.nonce);
+const grantedKey=await crypto.subtle.importKey('raw',Uint8Array.from(atob(clear.key),c=>c.charCodeAt(0)),{name:'AES-GCM'},false,['encrypt','decrypt']);
+assert.deepEqual((await decryptVault(fakePassword,await encryptVault(grantedKey,salt,entries))).entries,entries);
+await assert.rejects(wrapBotKey(fakePassword,a.salt,challenge,3));
+const index=await lookupTokens([{title:'РХТУ',aliases:'учебный портал',login:'excluded',password:'excluded'}]);
+assert.equal(index[0].length,3);
+assert.ok(index[0].every(value=>/^[a-f0-9]{64}$/.test(value)));
+console.log('Передача ключа RSA-OAEP, совместимость AES, версия и указатель названий проверены.');

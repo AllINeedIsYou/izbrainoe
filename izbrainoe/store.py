@@ -35,6 +35,7 @@ class Store:
               PRIMARY KEY(item_id,n));
             CREATE TABLE IF NOT EXISTS vault(user_id INTEGER PRIMARY KEY,version INTEGER NOT NULL,
               envelope TEXT NOT NULL,updated REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS vault_lookup(user_id INTEGER PRIMARY KEY,tokens TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS modes(user_id INTEGER PRIMARY KEY,mode TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS message_links(user_id INTEGER NOT NULL,message_id INTEGER NOT NULL,item_id TEXT NOT NULL,
               PRIMARY KEY(user_id,message_id));
@@ -129,6 +130,7 @@ class Store:
                 c.execute('UPDATE chunks SET user_id=? WHERE user_id=-1',(uid,))
                 c.execute('UPDATE memories SET user_id=? WHERE user_id=-1',(uid,))
                 c.execute('UPDATE vault SET user_id=? WHERE user_id=-1 AND NOT EXISTS(SELECT 1 FROM vault WHERE user_id=?)',(uid,uid))
+                c.execute('UPDATE vault_lookup SET user_id=? WHERE user_id=-1 AND NOT EXISTS(SELECT 1 FROM vault_lookup WHERE user_id=?)',(uid,uid))
             else:
                 r=c.execute('SELECT * FROM invites WHERE code=? AND used_by IS NULL AND expires>?',(code,time.time())).fetchone()
                 if not r:
@@ -242,14 +244,24 @@ class Store:
             r=c.execute('SELECT version,envelope FROM vault WHERE user_id=?',(uid,)).fetchone()
             return {'version':r[0],'envelope':json.loads(r[1])} if r else {'version':0,'envelope':None}
 
-    def save_vault(self, uid, version, envelope):
+    def save_vault(self, uid, version, envelope, lookup_tokens=None):
         with self.db() as c:
             c.execute('BEGIN IMMEDIATE')
             r=c.execute('SELECT version FROM vault WHERE user_id=?',(uid,)).fetchone()
             current=r[0] if r else 0
             if version!=current: return False
             c.execute('INSERT OR REPLACE INTO vault VALUES(?,?,?,?)',(uid,current+1,json.dumps(envelope),time.time()))
+            if lookup_tokens is not None:c.execute('INSERT OR REPLACE INTO vault_lookup VALUES(?,?)',(uid,json.dumps(lookup_tokens)))
             return True
+
+    def vault_lookup_index(self,uid,tokens):
+        with self.db() as c:c.execute('INSERT OR REPLACE INTO vault_lookup VALUES(?,?)',(uid,json.dumps(tokens)))
+
+    def known_vault_query(self,uid,words):
+        if not words:return False
+        wanted={hashlib.sha256(word.encode()).hexdigest() for word in words}
+        with self.db() as c:row=c.execute('SELECT tokens FROM vault_lookup WHERE user_id=?',(uid,)).fetchone()
+        return bool(row and any(wanted.issubset(set(entry)) for entry in json.loads(row[0])))
 
     def remember(self, uid, item_id, context, groups, analysis, vector=None, model=''):
         if not self.get(uid,item_id):return
@@ -291,7 +303,9 @@ class Store:
             return [dict(r) for r in c.execute('''SELECT message_id,MAX(created) AS created FROM (
                 SELECT message_id,created FROM outgoing_messages WHERE user_id=?
                 UNION ALL SELECT message_id,created FROM service_messages WHERE user_id=?)
-                GROUP BY message_id ORDER BY message_id''',(uid,uid))]
+                WHERE message_id NOT IN (SELECT m.message_id FROM message_links m JOIN items i ON i.id=m.item_id AND i.user_id=m.user_id
+                    WHERE m.user_id=? AND i.deleted IS NULL)
+                GROUP BY message_id ORDER BY message_id''',(uid,uid,uid))]
 
     def forget_chat_messages(self,uid,mids):
         with self.db() as c:
@@ -300,6 +314,31 @@ class Store:
 
     def expire_message(self,uid,mid,expires):
         with self.db() as c:c.execute('INSERT OR REPLACE INTO expiring_messages VALUES(?,?,?,?)',(uid,mid,expires,expires))
+
+    def hold_message(self,uid,mid):
+        with self.db() as c:c.execute('DELETE FROM expiring_messages WHERE user_id=? AND message_id=?',(uid,mid))
+
+    def flow_messages(self,uid,flow,message=None):
+        key=f'chat_flow_{uid}_{flow}'
+        with self.db() as c:
+            row=c.execute('SELECT value FROM meta WHERE key=?',(key,)).fetchone()
+            mids=json.loads(row[0]) if row else []
+            if message is not None and message not in mids:
+                mids.append(message)
+                c.execute('INSERT OR REPLACE INTO meta VALUES(?,?)',(key,json.dumps(mids)))
+            return mids
+
+    def finish_flow(self,uid,flow,seconds=5):
+        with self.db() as c:
+            key=f'chat_flow_{uid}_{flow}'
+            row=c.execute('SELECT value FROM meta WHERE key=?',(key,)).fetchone()
+            expires=time.time()+seconds
+            for mid in json.loads(row[0]) if row else []:
+                c.execute('INSERT OR REPLACE INTO expiring_messages VALUES(?,?,?,?)',(uid,mid,expires,expires))
+            c.execute('DELETE FROM meta WHERE key=?',(key,))
+
+    def discard_flow(self,uid,flow):
+        with self.db() as c:c.execute('DELETE FROM meta WHERE key=?',(f'chat_flow_{uid}_{flow}',))
 
     def due_messages(self,now):
         with self.db() as c:return [dict(r) for r in c.execute('SELECT * FROM expiring_messages WHERE next_attempt<=? ORDER BY expires LIMIT 100',(now,))]

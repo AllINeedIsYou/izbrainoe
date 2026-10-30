@@ -7,3 +7,6 @@
 .collection h3{overflow-wrap:anywhere;line-height:1.3}.collection .count{max-width:55px;overflow:hidden}.collection{min-width:0}
 
 .analysis-facts{margin:12px 0}.paper details{margin-top:18px}.paper summary{cursor:pointer;color:var(--accent)}.paper .context+.context{margin-top:12px}.logo-image{object-fit:cover;background:none}
+
+.home-hero{display:grid;grid-template-columns:42px minmax(0,1fr) 42px;align-items:center;gap:12px;margin:0 0 26px}.home-hero h1{grid-column:2;text-align:center;margin:0;text-wrap:balance}.home-hero>.primary{grid-column:3;width:42px;height:42px;padding:10px;margin:0}.home-hero+.searchbox,.home-hero+form{margin-top:0}
+@media(max-width:680px){.home-hero{gap:8px;margin-bottom:24px}.home-hero h1{font-size:29px}.home-hero>.primary{margin:0}}

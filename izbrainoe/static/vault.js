@@ -21,3 +21,26 @@ export async function decryptVault(password,envelope){
   if(data.check!=='izbrainoe-v1'||!Array.isArray(data.entries))throw Error('Повреждено хранилище.');
   return {key,salt,entries:data.entries};
 }
+
+export async function wrapBotKey(password,saltText,challenge,version){
+  if(challenge.version!==version)throw Error('Хранилище изменилось. Заблокируй и открой его заново.');
+  const material=await crypto.subtle.importKey('raw',enc.encode(password),'PBKDF2',false,['deriveBits']);
+  const raw=new Uint8Array(await crypto.subtle.deriveBits({name:'PBKDF2',salt:unb64(saltText),iterations:600000,hash:'SHA-256'},material,256));
+  let plain;
+  try{
+    const publicKey=await crypto.subtle.importKey('spki',unb64(challenge.spki),{name:'RSA-OAEP',hash:'SHA-256'},false,['encrypt']);
+    plain=enc.encode(JSON.stringify({key:b64(raw),salt:saltText,nonce:challenge.nonce,version}));
+    const wrapped=await crypto.subtle.encrypt({name:'RSA-OAEP'},publicKey,plain);
+    return {wrapped_key:b64(wrapped),nonce:challenge.nonce};
+  }finally{raw.fill(0);plain?.fill(0)}
+}
+
+export async function lookupTokens(entries){
+  return Promise.all(entries.map(async entry=>{
+    const words=[...new Set((String(entry.title||'')+' '+String(entry.aliases||'')).toLowerCase().replace(/ё/g,'е').match(/[\p{L}\p{N}_]+/gu)||[])].filter(w=>w.length>1).slice(0,64);
+    return Promise.all(words.map(async word=>{
+      const digest=new Uint8Array(await crypto.subtle.digest('SHA-256',enc.encode(word)));
+      return [...digest].map(b=>b.toString(16).padStart(2,'0')).join('');
+    }));
+  }));
+}

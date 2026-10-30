@@ -1,6 +1,7 @@
 import asyncio
 import json
 import time
+import hashlib
 import pytest
 from izbrainoe.bot import Bot,TelegramError
 from izbrainoe.config import Config
@@ -42,8 +43,8 @@ def test_vault_lookup_spoiler_and_expiry_never_reach_ai_or_archive(tmp_path):
             secret=message['text'].split('<tg-spoiler>')[1].split('</tg-spoiler>')[0]
             assert ENTRY['login'] in secret and 'TEST_ONLY_&lt;secret&gt;&amp;' in secret
             assert not s.list(101)
-            assert not s.due_messages(start+299)
-            assert s.due_messages(time.time()+301)[0]['message_id']==50
+            assert {r['message_id'] for r in s.due_messages(start+299)}=={40}
+            assert {r['message_id'] for r in s.due_messages(time.time()+301)}=={40,50}
             # New bot instance simulates a restart; no secret is needed to delete.
             again=Bot(cfg,Store(tmp_path),p);again.call=fake
             with s.db() as c:c.execute('UPDATE expiring_messages SET next_attempt=0')
@@ -101,5 +102,40 @@ def test_no_broad_credential_dump_or_ambiguous_selection(tmp_path):
             assert await b.vault_lookup(101,'данные')
             assert await b.vault_lookup(101,'рхту')
             assert all(ENTRY['password'] not in kw['text'] and '<tg-spoiler>' not in kw['text'] for kw in calls)
+        finally:await b.close();await p.close()
+    asyncio.run(run())
+
+
+def test_disabled_vault_name_request_is_not_archived_or_sent_to_ai(tmp_path):
+    async def run():
+        store=Store(tmp_path);cfg=Config(data_dir=tmp_path,allowed_ids=(101,),public_url='https://example.invalid')
+        p=Processor(cfg,store);b=Bot(cfg,store,p);calls=[]
+        store.save_vault(101,0,{'encrypted':'test'},[[hashlib.sha256('рхту'.encode()).hexdigest()]])
+        async def fake(method,**kwargs):calls.append(kwargs);return {'message_id':50}
+        async def forbidden(*args,**kwargs):raise AssertionError('Credential request reached archive or AI')
+        b.call=fake;p.index=forbidden;p.search=forbidden
+        try:
+            await b.message({'chat':{'type':'private'},'from':{'id':101},'message_id':40,'text':'рхту'})
+            assert not store.list(101)
+            assert any('выключена' in call.get('text','') for call in calls)
+            assert calls[-1]['reply_markup']['inline_keyboard'][0][0]['web_app']['url'].endswith('/?page=vault')
+        finally:await b.close();await p.close()
+    asyncio.run(run())
+
+
+def test_repeat_of_failed_search_does_not_become_a_note(tmp_path):
+    async def run():
+        store=Store(tmp_path);cfg=Config(data_dir=tmp_path,allowed_ids=(101,));p=Processor(cfg,store);b=Bot(cfg,store,p)
+        store.save_vault(101,0,{'encrypted':'test'})
+        async def fake(*args,**kwargs):return {'message_id':50}
+        async def search(*args,**kwargs):return {'items':[],'total':0,'mode':'keyword'}
+        async def forbidden(*args,**kwargs):raise AssertionError('Repeated query became a saved note')
+        b.call=fake;p.search=search;p.index=forbidden
+        message=lambda mid,text:{'chat':{'type':'private'},'from':{'id':101},'message_id':mid,'text':text}
+        try:
+            await b.message(message(1,'🔎 Найти'))
+            await b.message(message(2,'рхту'))
+            await b.message(message(3,'рхту'))
+            assert not store.list(101)
         finally:await b.close();await p.close()
     asyncio.run(run())
