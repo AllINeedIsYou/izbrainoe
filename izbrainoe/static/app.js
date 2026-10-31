@@ -68,7 +68,7 @@ function settings(){const m=state.me;return `${hero('Всё под контро�
  ['Анализ материалов',['gemini','provod'].includes(m.analysis_provider)?'Gemini 3.8 Flash: текст и изображения':'Локальная модель на Mac',m.analysis_provider==='provod'?'Provod':m.analysis_provider==='gemini'?'Google':'Локально',true],
  ['Telegram-бот',`@${m.bot_username}`,m.bot_running?'Работает':m.bot_configured?'Проверь подключение':'Нужен токен',m.bot_running],
  ['Поиск по описанию',m.search_provider==='gemini'?'Gemini через '+(m.analysis_provider==='provod'?'Provod':'Google')+' · запрос и краткие описания материалов':'Локальная модель на Mac',m.search_provider==='gemini'?'Подключён':m.ai_ready?'Подключён':m.ai_error,m.search_provider==='gemini'||m.ai_ready],
- ['Текст на фотографиях','Распознавание средствами macOS',m.ocr_ready?'Работает локально':'Не подключено',m.ocr_ready],
+ ['Текст и формулы на фотографиях',m.vision_provider==='gemini'?'Gemini видит само изображение':'Локальное распознавание',m.vision_ready?'Подключено':'Не подключено',m.vision_ready],
  ['Текст в PDF','Первые '+(m.pdf_pages||4)+' страницы; текст и изображения','Локально',true],
  ['Личная память','Сохраняет твои пояснения и пересматривает похожие записи','Примеров: '+(m.memory_examples||0),true],
  ['Интернет','Общие понятия при сомнении; до двух источников',m.web_lookup?'Включён':'Выключен',m.web_lookup],
@@ -173,3 +173,5 @@ setInterval(async()=>{if(!state.me||!['queued','running'].includes(state.me.lear
 boot();
 
 setInterval(async()=>{if(!state.me||document.querySelector('.modal'))return;try{await refreshMe();const banner=document.querySelector('#phone-status');if(banner)banner.outerHTML=phoneBanner()}catch{}},15000);
+
+setInterval(async()=>{const item=state.detail;if(state.page!=='detail'||item?.analysis_state!=='retry_pending'||document.querySelector('.modal'))return;try{const updated=await api('/items/'+item.id);applyDetail(updated,item.id,item.from)}catch{}},5000);

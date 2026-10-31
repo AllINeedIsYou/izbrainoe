@@ -160,6 +160,8 @@ def create_app(config=None,manage_phone=False):
                 'voice_ready':processor.voice_ready(),'paired':bool(owner),
                 'memory_examples':len(store.memories(uid)),'learning':store.learning_state(uid),
                 'web_lookup':config.web_lookup,'pdf_pages':config.pdf_pages,'max_upload_mb':config.max_upload_mb,
+                'vision_provider':'gemini' if config.ai_provider in ('gemini','provod') else 'mac',
+                'vision_ready':processor.analyzer.provod.enabled or processor.analyzer.gemini.enabled if config.ai_provider in ('gemini','provod') else (ROOT/'runtime'/'ocr').exists(),
                 'analysis_provider':config.ai_provider,'analysis_model':config.gemini_model if config.ai_provider in ('gemini','provod') else config.chat_model,
                 'search_provider':'gemini' if config.ai_provider in ('gemini','provod') else 'local' if processor.ai_ready else 'keyword',
                 'gemini':processor.analyzer.gemini.status() if local_session(request) else None,

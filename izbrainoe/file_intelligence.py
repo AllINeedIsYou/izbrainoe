@@ -26,15 +26,20 @@ def extension(filename):return Path(filename).suffix.lower().lstrip('.')
 def file_kind(filename,mime='',original='document'):
     ext=extension(filename)
     if original=='voice':return 'voice'
-    if ext in IMAGE_EXT or mime.startswith('image/'):return 'photo'
-    if ext in AUDIO_EXT or mime.startswith('audio/'):return 'audio'
-    if ext in VIDEO_EXT or mime.startswith('video/'):return 'video'
+    if mime.startswith('image/'):return 'photo'
+    if mime.startswith('audio/'):return 'audio'
+    if mime.startswith('video/'):return 'video'
+    if mime in ('application/pdf','application/json','application/zip'):return 'document'
+    if ext in IMAGE_EXT:return 'photo'
+    if ext in AUDIO_EXT:return 'audio'
+    if ext in VIDEO_EXT:return 'video'
     return original if original in ('note','link','photo','audio','video') else 'document'
 
 
 def format_hint(item):
     name=item.get('filename') or item.get('title','');ext=extension(name)
     if item.get('mime')=='application/json':ext='json'
+    if item.get('mime')=='application/zip' and ext not in ('docx','odt','pptx','odp','epub','xlsx','xlsm','ods'):ext='zip'
     kind=file_kind(name,item.get('mime',''),item.get('kind','document'))
     text=(name+' '+item.get('body','')[:6000]).lower()
     folder=typ=''

@@ -224,3 +224,11 @@ def test_specific_grounded_topic_beats_generic_folders_but_not_manual_context():
  a['subject']='Численные методы';a['summary']='Учебные формулы.'
  assert stabilize_folder({'body':'','context':''},a)['groups']==['Высшая математика']
  assert stabilize_folder({**item,'context':'Все мои документы хранить вместе'},a)['groups']==['Учёба']
+
+
+def test_byte_signatures_win_over_misleading_names_and_mime(tmp_path):
+ from izbrainoe.file_intelligence import file_kind,sniff_mime
+ path=tmp_path/'not-really-json.json';Image.new('RGB',(40,40),'white').save(path,format='PNG')
+ assert file_kind(path.name,sniff_mime(path))=='photo'
+ path=tmp_path/'not-really-photo.jpg';path.write_bytes(b'%PDF-1.7\n')
+ assert file_kind(path.name,sniff_mime(path),'photo')=='document'

@@ -158,7 +158,8 @@ class Processor:
         item=self.store.get(uid,item_id,raw=True)
         if not item: return
         detected=sniff_mime(item['path']) if item['path'] else ''
-        mime=detected if detected and detected!='application/zip' else item['mime']
+        office=extension(item['filename']) in ('docx','odt','pptx','odp','epub','xlsx','xlsm','ods')
+        mime=detected if detected and not (detected=='application/zip' and office) else item['mime']
         kind=file_kind('' if detected else item['filename'],mime,item['kind'])
         if detected=='application/json':kind='document'
         self.store.update(uid,item_id,analysis_state='analyzing',kind=kind,mime=mime)
@@ -406,10 +407,9 @@ class Processor:
         detected=sniff_mime(path)
         if detected=='application/json' and suffix not in ('.json','.jsonl','.ipynb'):
             return await asyncio.to_thread(inspect_file,path,'application/json','preview.json')
-        if detected.startswith('image/'):
-            mime=detected
+        if detected and detected!='application/zip':mime=detected
         if detected=='application/pdf':suffix='.pdf'
-        if suffix=='.pdf':
+        if suffix=='.pdf' and not mime.startswith(('image/','audio/','video/')):
             if self.config.ai_provider in ('gemini','provod'):
                 def read_pdf():
                     reader=PdfReader(path)
@@ -446,7 +446,7 @@ class Processor:
                 return result[:60000],f'Прочитаны первые {len(parts)} из {len(reader.pages)} страниц PDF; текстовый слой. Полный файл сохранён.'
             try: return await asyncio.wait_for(asyncio.to_thread(pdf),30)
             except Exception: return '', 'Не удалось прочитать PDF. Оригинал сохранён.'
-        if mime.startswith('image/') or suffix in ('.jpg','.jpeg','.png','.heic','.webp'):
+        if mime.startswith('image/') or not detected and suffix in ('.jpg','.jpeg','.png','.heic','.webp'):
             if self.config.ai_provider in ('gemini','provod'):
                 return '', 'Изображение передаётся непосредственно Gemini; текст и формулы распознаются вместе с изображением.'
             binary=Path(__file__).parent.parent/'runtime'/'ocr'
