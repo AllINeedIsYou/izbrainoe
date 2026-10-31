@@ -61,7 +61,7 @@ def test_ruble_usage_and_vision_request(tmp_path, monkeypatch):
     assert result['document_type'] == 'расписание' and meta['images'] == 4
     assert meta['usage']['estimated_rub'] == .4258  # reasoning already in completion_tokens
     body = calls[0]
-    assert body['model'] == MODEL and body['max_tokens'] == 1200
+    assert body['model'] == MODEL and body['max_tokens'] == 1800
     assert len([part for part in body['messages'][1]['content'] if part['type'] == 'image_url']) == 4
     schema = body['response_format']['json_schema']['schema']
     assert schema['additionalProperties'] is False and set(schema['required']) == set(schema['properties'])

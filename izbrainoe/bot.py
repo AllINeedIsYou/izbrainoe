@@ -7,6 +7,7 @@ import json
 import html
 from pathlib import Path
 import httpx
+from .file_intelligence import file_kind
 from .processing import sensitive,delete_intent
 from .vault_access import VaultAccess,VaultAccessError,credential_matches,credential_query
 
@@ -290,7 +291,7 @@ class Bot:
         item=self.store.get(uid,item_id,raw=True)
         if not item: raise TelegramError('Материал не найден')
         if item['tg_file_id']:
-            methods={'photo':('sendPhoto','photo'),'voice':('sendVoice','voice'),'audio':('sendAudio','audio')}
+            methods={'photo':('sendPhoto','photo'),'voice':('sendVoice','voice'),'audio':('sendAudio','audio'),'video':('sendVideo','video')}
             method,param=methods.get(item['kind'],('sendDocument','document'))
             result=await self.call(method,chat_id=uid,reply_markup=self.keyboard(),**{param:item['tg_file_id']})
             self.store.record_outgoing(uid,result)
@@ -420,8 +421,6 @@ class Bot:
                 self.store.flow_messages(uid,'search',m['message_id'])
                 await self.results(uid,text)
                 await self.dismiss_search_prompt(uid);return
-        if any(k in m for k in ('video','video_note','animation')):
-            await self.send(uid,'Видео пока не поддерживаются. Можно сохранить ссылку или текстовое пояснение.'); return
         if sensitive(text):
             await self.send(uid,'Похоже, здесь есть пароль или другой секрет. Я не добавил его в базу и поиск. Для паролей используй защищённый раздел в подборках. Исходное сообщение остаётся в Telegram.',self.web_button('Открыть защищённый раздел') or self.keyboard())
             return
@@ -483,6 +482,8 @@ class Bot:
             file=m['photo'][-1]; filename='Фото.jpg'; mime='image/jpeg'; kind='photo'
         elif m.get('voice'):
             file=m['voice']; filename='Голосовое.ogg'; mime='audio/ogg'; kind='voice'
+        elif m.get('video') or m.get('animation') or m.get('video_note'):
+            file=m.get('video') or m.get('animation') or m['video_note'];filename=file.get('file_name','Видео.mp4');mime=file.get('mime_type','video/mp4');kind='video'
         elif m.get('audio'):
             file=m['audio']; filename=file.get('file_name','Аудио.mp3'); mime=file.get('mime_type','audio/mpeg'); kind='audio'
         elif re.search(r'https?://',text): kind='link'
@@ -490,11 +491,12 @@ class Bot:
         if file:
             path,digest,status=await self.download(uid,file,filename)
             if path:
-                extracted,status=await self.processor.extract(path,mime,filename)
+                extracted,status=await self.processor.transcribe(path,filename) if kind=='voice' else await self.processor.extract(path,mime,filename)
                 if sensitive(extracted):
                     Path(path).unlink(missing_ok=True)
                     await self.send(uid,'В содержимом обнаружен возможный секрет. Материал не добавлен в локальное хранилище или поиск. Исходник остался в Telegram.'); return
                 text='\n\n'.join(x for x in [text,extracted] if x)
+        kind=file_kind(filename,mime,kind)
         title=filename or text.split('\n')[0][:100]
         duplicate=self.store.duplicate(uid,digest)
         i=self.store.create(uid,kind,title,text,filename=filename,mime=mime,path=path,digest=digest,

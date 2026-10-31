@@ -159,15 +159,18 @@ def test_bot_save_context_forwarded_query_and_isolation(env):
     asyncio.run(b.message({'chat':{'type':'private'},'from':{'id':999},'message_id':3,'text':'Чужой'}))
     assert not store.list(999)
 
-def test_bot_secrets_and_video_not_saved(env):
+def test_bot_secrets_not_saved_and_video_supported(env):
     _,app=env;b=app.state.bot;sent=[]
     async def fake(method,**kw):sent.append(kw);return {'message_id':1}
     b.call=fake
     common={'chat':{'type':'private'},'from':{'id':101},'message_id':4}
     asyncio.run(b.message({**common,'text':'password: FAKE-ONLY'}))
     asyncio.run(b.message({**common,'video':{'file_id':'fake'}}))
-    assert not app.state.store.list(101)
-    assert len(sent)==2
+    assert len(app.state.store.list(101))==1
+    assert app.state.store.list(101)[0]['kind']=='video'
+    assert app.state.store.list(101)[0]['groups']==['Видео']
+    assert all('FAKE-ONLY' not in i['body'] for i in app.state.store.list(101))
+    assert len(sent)>=2
 
 def test_upload_size_limit(env):
     c,_=env

@@ -60,23 +60,13 @@ class Usage:
 async def visual_pages(item,pages=4,max_edge=1536):
     path=Path(item.get('path') or '')
     photo=item.get('kind')=='photo' or item.get('mime','').startswith('image/')
-    pdf=Path(item.get('filename','')).suffix.lower()=='.pdf'
+    pdf=item.get('mime')=='application/pdf' or Path(item.get('filename','')).suffix.lower()=='.pdf'
+    if item.get('mime') in ('text/plain','application/json'):photo=pdf=False
     if not (photo or pdf) or not path.is_file():return []
-    binary=ROOT/'runtime/ocr'
-    if not binary.is_file():raise GeminiError('Для подготовки фотографий нужен локальный компонент распознавания.','vision_unavailable')
-    p=await asyncio.create_subprocess_exec(str(binary),str(path),str(max(2,min(4,pages))),'--preview','--max-edge',str(max(1024,min(2048,max_edge))),stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL)
-    try:out,_=await asyncio.wait_for(p.communicate(),45)
-    except (TimeoutError,asyncio.CancelledError):p.kill();await p.wait();raise
-    if p.returncode or len(out)>16*1024*1024:raise GeminiError('Не удалось подготовить изображение для Gemini.','vision_unavailable')
-    try:
-        data=json.loads(out)
-        if data.get('locked'):return []
-        result=data['pages'][:4 if pdf else 1]
-        for image in result:
-            raw=base64.b64decode(image['data'],validate=True)
-            if image.get('mime_type')!='image/jpeg' or not raw.startswith(b'\xff\xd8') or len(raw)>3*1024*1024:raise ValueError()
-        return result
-    except (ValueError,KeyError,TypeError):raise GeminiError('Повреждён локальный просмотр изображения.','vision_unavailable') from None
+    from .vision import previews
+    try:return await asyncio.wait_for(asyncio.to_thread(previews,path,photo,max(2,min(4,pages)),max(1024,min(2048,max_edge))),20)
+    except Exception:
+        raise GeminiError('Не удалось прочитать изображение или страницы PDF. Оригинал сохранён.','vision_unavailable') from None
 
 
 class Gemini:

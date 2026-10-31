@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field,SecretStr
 from .gemini import GeminiError,MODEL
 from .config import Config, ROOT
 from .store import Store
+from .file_intelligence import file_kind
 from .processing import Processor, sensitive,delete_intent
 from .auth import validate_telegram
 from .bot import Bot, TelegramError
@@ -80,6 +81,7 @@ def create_app(config=None,manage_phone=False):
         await processor.probe()
         task=background(bot.run())
         background(phone.run())
+        background(processor.retry_loop())
         yield
         for t in list(tasks): t.cancel()
         await asyncio.gather(*tasks,return_exceptions=True)
@@ -223,7 +225,6 @@ def create_app(config=None,manage_phone=False):
         if len(context)>10000 or sensitive(context): raise HTTPException(400,'Проверьте пояснение. Секреты добавляются в разделе «Пароли».')
         name=Path(file.filename or 'Файл').name[:180]
         suffix=Path(name).suffix.lower()
-        if suffix in ('.mp4','.mov','.avi','.mkv','.webm'): raise HTTPException(400,'Видео пока не поддерживаются.')
         path=store.folder/'files'/(secrets.token_hex(16)+suffix[:12])
         digest=hashlib.sha256(); size=0
         try:
@@ -236,7 +237,7 @@ def create_app(config=None,manage_phone=False):
             mime=file.content_type or 'application/octet-stream'
             text,status=await processor.extract(path,mime,name)
             if sensitive(text+' '+name): raise HTTPException(400,'В файле обнаружен возможный секрет. Он не добавлен в хранилище или поиск.')
-            kind='photo' if mime.startswith('image/') else 'audio' if mime.startswith('audio/') else 'document'
+            kind=file_kind(name,mime)
             item=store.create(uid,kind,name,text,filename=name,path=str(path),mime=mime,digest=digest.hexdigest(),extraction=status)
             if context: store.update(uid,item['id'],context=context)
             await processor.index(uid,item['id'])
@@ -295,7 +296,9 @@ def create_app(config=None,manage_phone=False):
         if not item:raise HTTPException(404,'Материал не найден.')
         try:await processor.reread(uid,item_id)
         except ValueError as e:raise HTTPException(400,str(e))
-        return store.get(uid,item_id)
+        result=store.get(uid,item_id)
+        if not result:raise HTTPException(404,'Материал удалён во время обработки.')
+        return result
 
     @app.delete('/api/items/{item_id}')
     async def remove(item_id:str,uid=Depends(user)):
@@ -318,7 +321,7 @@ def create_app(config=None,manage_phone=False):
     @app.get('/api/items/{item_id}/preview')
     async def preview(item_id:str,uid=Depends(user)):
         i=store.get(uid,item_id,raw=True)
-        if not i or not i['path'] or i['mime'] not in ('image/jpeg','image/png','image/webp','audio/ogg','audio/mpeg','audio/wav'):
+        if not i or not i['path'] or i['mime'] not in ('image/jpeg','image/png','image/webp','audio/ogg','audio/mpeg','audio/wav','audio/mp4','video/mp4','video/webm','video/quicktime'):
             raise HTTPException(404,'Нет предварительного просмотра.')
         return FileResponse(i['path'],media_type=i['mime'])
 

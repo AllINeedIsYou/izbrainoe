@@ -100,7 +100,7 @@ class Provod:
         return dict(provider='provod', model=MODEL, key_configured=bool(self.config.provod_key),
                     error=self.error, monthly_limit_rub=self.config.provod_monthly_limit_rub,
                     usage=self.usage.summary(), input_price=INPUT_PRICE, output_price=OUTPUT_PRICE,
-                    currency='RUB', prices_checked='2026-10-29', analysis_policy='vision-v4-topic-folders')
+                    currency='RUB', prices_checked='2026-10-29', analysis_policy='portable-files-v5')
 
     @staticmethod
     def api_error(status):
@@ -119,7 +119,13 @@ class Provod:
     async def check_key(self, key):
         try:
             async with httpx.AsyncClient(timeout=20, trust_env=False, follow_redirects=False) as c:
-                r = await c.get(API + '/models', headers={'Authorization': 'Bearer ' + key})
+                for attempt in range(2):
+                    try:
+                        r = await c.get(API + '/models', headers={'Authorization': 'Bearer ' + key})
+                        break
+                    except (httpx.ConnectError,httpx.ConnectTimeout,httpx.ReadTimeout):
+                        if attempt:raise
+                        await asyncio.sleep(.3)
             if not r.is_success:
                 raise self.api_error(r.status_code)
             model = next((m for m in r.json()['data'] if m.get('id') == MODEL), None)
@@ -132,8 +138,9 @@ class Provod:
             if not any(p in params for p in ('max_completion_tokens', 'max_tokens')):
                 raise GeminiError('Provod не подтвердил ограничение длины ответа.', 'capabilities')
             self.capabilities = model
+            self.error = ''
         except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError):
-            raise GeminiError('Не удалось проверить ключ Provod. Значение ключа не показывается.', 'connection') from None
+            raise GeminiError('Сбой соединения с каталогом Provod. Это не означает, что ключ неверный; разбор будет повторён.', 'connection') from None
 
     async def analyse(self, item, payload, system, schema):
         if not self.enabled:
@@ -146,8 +153,9 @@ class Provod:
                         if self.capabilities is None:
                             await self.check_key(self.config.provod_key)
                 review = payload.get('_analysis_stage') == 'review'
-                output_cap = 1600 if review else 1200
+                output_cap = 2000 if review else 1200
                 visuals = await visual_pages(item, self.config.pdf_pages, 2048 if review else 1536)
+                if visuals:output_cap=2200 if review else 1800
                 content = [{'type': 'text', 'text': json.dumps(payload, ensure_ascii=False)}]
                 for im in visuals:
                     content.extend([{'type': 'text', 'text': f'Страница {im["number"]}.'},
@@ -158,6 +166,8 @@ class Provod:
                 body = dict(model=MODEL, messages=[{'role': 'system', 'content': instruction}, {'role': 'user', 'content': content}],
                             response_format={'type': 'json_schema', 'json_schema': {'name': 'archive_analysis', 'strict': True, 'schema': strict_schema(schema)}},
                             stream=False, **{cap: output_cap})
+                if 'temperature' in params:body['temperature']=0
+                if 'include_reasoning' in params:body['include_reasoning']=False
                 if 'reasoning_effort' in params:
                     body['reasoning_effort'] = 'medium' if review else 'low'
                 # No paid token-count endpoint: overestimate text by UTF-8 byte count
@@ -183,7 +193,11 @@ class Provod:
                 choice = data['choices'][0]
                 if choice.get('finish_reason') != 'stop':
                     raise GeminiError('Gemini через Provod не завершила разбор. Использован локальный анализ.', 'incomplete')
-                result = json.loads(choice['message']['content'])
+                content=choice['message']['content']
+                if isinstance(content,list):content=''.join(part.get('text','') for part in content if isinstance(part,dict))
+                if isinstance(content,str) and content.lstrip().startswith('```'):
+                    content=content.strip().split('\n',1)[-1].rsplit('```',1)[0]
+                result = json.loads(content)
                 if not isinstance(result, dict):
                     raise ValueError()
                 self.error = ''
@@ -192,11 +206,13 @@ class Provod:
         except GeminiError as e:
             self.error = str(e)
             raise
-        except (httpx.HTTPError, TimeoutError, OSError, ValueError, KeyError, TypeError, IndexError):
+        except (httpx.HTTPError, TimeoutError, OSError, ValueError, KeyError, TypeError, IndexError) as error:
             if key:
                 self.usage.unknown(key)
-            self.error = 'Provod не ответил корректно. Использован локальный анализ; неопределённый расход оставлен в резерве.'
-            raise GeminiError(self.error) from None
+            network=isinstance(error,(httpx.HTTPError,TimeoutError))
+            self.error = ('Прервалось соединение с Provod. Разбор будет повторён.' if network else 'Не удалось обработать ответ Provod. Разбор будет повторён.')
+            self.error += ' Неопределённый расход оставлен в резерве.'
+            raise GeminiError(self.error,'connection' if network else 'invalid_result') from None
         except asyncio.CancelledError:
             if key:
                 self.usage.unknown(key)

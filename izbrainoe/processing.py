@@ -19,6 +19,7 @@ from .knowledge import PersonalAnalyzer,grounded_features
 from .folders import primary_folder,single_folder_analysis
 from .search import GeminiSearch
 from .gemini import GeminiError
+from .file_intelligence import inspect_file,format_hint,file_kind,format_directive,extension,sniff_mime
 
 STEM=snowballstemmer.stemmer('russian')
 STOP=set('найди найти покажи где это этот тот мне мой моя мои для про что как когда был было была или из на по с со в во и а у к ко от то the pdf'.split())
@@ -64,7 +65,7 @@ class Processor:
         self.limit=asyncio.Semaphore(1)
         self.embed_backoff=0
         self.audio_limit=asyncio.Semaphore(1)
-        self.index_locks={}
+        self.index_locks={};self.analysis_limit=asyncio.Semaphore(3)
         self.analyzer=PersonalAnalyzer(config,store,self.embed,cosine)
         self.cloud_search=GeminiSearch()
         self.review_tasks={};self.review_pending={};self.review_notifier=None;self.rebuild_tasks={};self.closing=False
@@ -150,13 +151,17 @@ class Processor:
 
     async def index(self, uid, item_id, force=False):
         lock=self.index_locks.setdefault((uid,item_id),asyncio.Lock())
-        async with lock:
+        async with lock,self.analysis_limit:
             await self._index(uid,item_id,force)
 
     async def _index(self, uid, item_id, force=False):
         item=self.store.get(uid,item_id,raw=True)
         if not item: return
-        self.store.update(uid,item_id,analysis_state='analyzing')
+        detected=sniff_mime(item['path']) if item['path'] else ''
+        mime=detected if detected and detected!='application/zip' else item['mime']
+        kind=file_kind('' if detected else item['filename'],mime,item['kind'])
+        if detected=='application/json':kind='document'
+        self.store.update(uid,item_id,analysis_state='analyzing',kind=kind,mime=mime)
         item=self.store.get(uid,item_id,raw=True)
         text='\n'.join([item['title'],item['context'],item['body']])
         # Known secrets must never be indexed or sent even to a local model.
@@ -166,7 +171,7 @@ class Processor:
             return
         cs=chunks(text)
         vs=None
-        if self.ai_ready:
+        if self.ai_ready and self.config.ai_provider not in ('gemini','provod'):
             try:
                 vs=[]
                 for start in range(0,len(cs),8): vs.extend(await self.embed(cs[start:start+8]))
@@ -180,25 +185,46 @@ class Processor:
         groups=analysis['groups']
         extra='\n'.join([analysis.get('summary',''),analysis.get('document_type',''),analysis.get('subject',''),*analysis.get('topics',[]),*groups]).strip()
         extra_vector=None
-        if extra and not sensitive(extra) and self.ai_ready:
+        if extra and not sensitive(extra) and self.ai_ready and self.config.ai_provider not in ('gemini','provod'):
             try:extra_vector=(await self.embed([extra]))[0]
             except Exception:pass
         current=self.store.get(uid,item_id,raw=True)
         if not current or current['updated']!=item['updated']:return
         unread_stub=bool(item['source_label'] and item['kind']=='document' and not item['path'])
+        recognized=analysis.get('recognized_text','')
+        if recognized and not sensitive(recognized):
+            self.store.add_chunk(uid,item_id,len(cs)+1,recognized)
         understood_image=analysis.get('method')=='gemini' and analysis.get('cloud',{}).get('images',0)>0
         values={'analysis_json':json.dumps(analysis,ensure_ascii=False),
-                'analysis_state':'needs_original' if unread_stub or not (item['body'].strip() or item['context'].strip() or understood_image) else 'needs_context' if analysis.get('needs_context') else 'ready'}
+                'analysis_state':('unreadable' if item['path'] else 'needs_original') if unread_stub or not (item['body'].strip() or item['context'].strip() or understood_image) else 'needs_context' if analysis.get('needs_context') else 'ready'}
+        if recognized and not sensitive(recognized) and (item['kind']=='photo' or item['mime'].startswith('image/')):
+            values['body']='\n\n'.join(x for x in (item.get('original_caption',''),recognized) if x)
+            values['extraction']='Текст, формулы и визуальное содержание распознаны Gemini.'
         if not current['manual_groups']:values['groups_json']=json.dumps(groups,ensure_ascii=False)
+        retryable=analysis.get('cloud',{}).get('status') in ('connection','unavailable','invalid_result','overloaded','incomplete','vision_unavailable')
+        with self.store.db() as db:
+            if retryable:
+                attempts=(db.execute('SELECT attempts FROM analysis_retries WHERE user_id=? AND item_id=?',(uid,item_id)).fetchone() or [0])[0]
+                if attempts>=2:db.execute('DELETE FROM analysis_retries WHERE user_id=? AND item_id=?',(uid,item_id))
+                if attempts<2:
+                    values['analysis_state']='retry_pending'
+                    db.execute('INSERT OR REPLACE INTO analysis_retries VALUES(?,?,?,?)',(uid,item_id,attempts+1,time.time()+30*3**attempts))
+            else:db.execute('DELETE FROM analysis_retries WHERE user_id=? AND item_id=?',(uid,item_id))
         self.store.update(uid,item_id,**values)
         if extra and not sensitive(extra):self.store.add_chunk(uid,item_id,len(cs),extra,extra_vector,self.config.embed_model)
 
     async def feedback(self,uid,item_id):
+        before=self.store.get(uid,item_id)
+        directive=format_directive(before['title'],before['context'],before['groups'],before['manual_groups']) if before else None
+        with self.store.db() as db:db.execute('DELETE FROM format_rules WHERE user_id=? AND source_item=?',(uid,item_id))
+        if directive:
+            folder,extensions=directive
+            self.store.set_format_rules(uid,folder,extensions,item_id)
         await self.index(uid,item_id)
         item=self.store.get(uid,item_id,raw=True)
         if not item:return
         vector=None
-        if self.ai_ready:
+        if self.ai_ready and self.config.ai_provider not in ('gemini','provod'):
             try:vector=(await self.embed([item['title']+'\n'+item['body'][:3500]+'\n'+item['context']]))[0]
             except Exception:pass
         self.store.remember(uid,item_id,item['context'],json.loads(item['groups_json']),json.loads(item['analysis_json']),vector,self.config.embed_model if vector else '')
@@ -219,7 +245,12 @@ class Processor:
                 memories=[m for m in self.store.memories(uid) if m['item_id'] in anchors]
                 candidates=[]
                 for i in self.store.list(uid):
-                    if i['id'] in anchors or i['manual_groups'] or len(i['body'].strip())<35:continue
+                    if i['id'] in anchors or i['manual_groups']:continue
+                    raw=self.store.get(uid,i['id'],raw=True)
+                    rule=self.store.format_rule(uid,extension(raw['filename'])) if raw else ''
+                    if rule:
+                        candidates.append(i);continue
+                    if len(i['body'].strip())<35:continue
                     ik,isub=grounded_features(i['body'],i['context'])
                     matches=False
                     for m in memories:
@@ -256,16 +287,16 @@ class Processor:
         if tasks:await asyncio.gather(*tasks,return_exceptions=True)
         await self.analyzer.provod.close()
 
-    async def reread(self,uid,item_id):
+    async def reread(self,uid,item_id,force=True):
         item=self.store.get(uid,item_id,raw=True)
         if not item:return
         if item['path'] and Path(item['path']).is_file():
-            text,status=await self.extract(Path(item['path']),item['mime'],item['filename'])
+            text,status=await self.transcribe(item['path'],item['filename']) if item['kind']=='voice' else await self.extract(Path(item['path']),item['mime'],item['filename'])
             if sensitive(text):raise ValueError('Секреты не анализируются.')
             current=self.store.get(uid,item_id,raw=True)
             if not current or current['updated']!=item['updated']:return
             self.store.update(uid,item_id,body='\n\n'.join(x for x in (item.get('original_caption',''),text) if x),extraction=status)
-        await self.index(uid,item_id,force=True)
+        await self.index(uid,item_id,force=force)
 
     def rebuild(self,uid):
         if (task:=self.rebuild_tasks.get(uid)) and not task.done():return False
@@ -281,17 +312,23 @@ class Processor:
             # Load existing human corrections before reclassifying the archive.
             for i in rows:
                 if not i['context'].strip() and not i['manual_groups']:continue
+                directive=format_directive(i['title'],i['context'],i['groups'],i['manual_groups'])
+                if directive:self.store.set_format_rules(uid,directive[0],directive[1],i['id'])
                 await self.index(uid,i['id'])
                 r=self.store.get(uid,i['id'],raw=True)
                 if r:self.store.remember(uid,i['id'],r['context'],json.loads(r['groups_json']),json.loads(r['analysis_json']))
-            for i in rows:
-                self.store.learning_state(uid,{'status':'running','mode':'rebuild','checked':checked,'changed':changed,'failed':failed,'total':len(rows),'updated':time.time()})
-                try:
-                    await self.reread(uid,i['id'])
-                    new=self.store.get(uid,i['id'])
-                    if new and new['groups']!=i['groups']:changed+=1
-                except Exception:failed+=1
-                checked+=1
+            gate=asyncio.Semaphore(3)
+            async def reread_one(i):
+                nonlocal checked,changed,failed
+                async with gate:
+                    self.store.learning_state(uid,{'status':'running','mode':'rebuild','checked':checked,'changed':changed,'failed':failed,'total':len(rows),'updated':time.time()})
+                    try:
+                        await self.reread(uid,i['id'],force=False)
+                        new=self.store.get(uid,i['id'])
+                        if new and new['groups']!=i['groups']:changed+=1
+                    except Exception:failed+=1
+                    checked+=1
+            await asyncio.gather(*(reread_one(i) for i in rows))
             self.store.learning_state(uid,{'status':'done','mode':'rebuild','checked':checked,'changed':changed,'failed':failed,'updated':time.time()})
             if self.review_notifier:await self.review_notifier(uid,checked,changed)
         except asyncio.CancelledError:
@@ -366,7 +403,21 @@ class Processor:
 
     async def extract(self, path, mime, filename):
         suffix=Path(filename).suffix.lower()
+        detected=sniff_mime(path)
+        if detected=='application/json' and suffix not in ('.json','.jsonl','.ipynb'):
+            return await asyncio.to_thread(inspect_file,path,'application/json','preview.json')
+        if detected.startswith('image/'):
+            mime=detected
+        if detected=='application/pdf':suffix='.pdf'
         if suffix=='.pdf':
+            if self.config.ai_provider in ('gemini','provod'):
+                def read_pdf():
+                    reader=PdfReader(path)
+                    if reader.is_encrypted:return '', 'PDF защищён паролем. Нужен открытый файл.'
+                    parts=[f'[Страница {n+1}]\n'+(p.extract_text() or '')[:12000] for n,p in enumerate(reader.pages[:self.config.pdf_pages])]
+                    return '\n\n'.join(parts)[:60000],f'Подготовлены первые {len(parts)} страниц PDF: текстовый слой и изображения для Gemini. Полный файл сохранён.'
+                try:return await asyncio.wait_for(asyncio.to_thread(read_pdf),15)
+                except Exception:return '', 'Текстовый слой PDF не прочитан; страницы передаются Gemini как изображения.'
             binary=Path(__file__).parent.parent/'runtime'/'ocr'
             if binary.exists():
                 try:
@@ -396,6 +447,8 @@ class Processor:
             try: return await asyncio.wait_for(asyncio.to_thread(pdf),30)
             except Exception: return '', 'Не удалось прочитать PDF. Оригинал сохранён.'
         if mime.startswith('image/') or suffix in ('.jpg','.jpeg','.png','.heic','.webp'):
+            if self.config.ai_provider in ('gemini','provod'):
+                return '', 'Изображение передаётся непосредственно Gemini; текст и формулы распознаются вместе с изображением.'
             binary=Path(__file__).parent.parent/'runtime'/'ocr'
             if binary.exists():
                 try:
@@ -408,25 +461,17 @@ class Processor:
                         return text, 'Текст распознан на Mac.' if text else 'Текст на изображении не найден.'
                 except Exception: pass
             return '', 'Фото сохранено. Добавьте пояснение; локальное распознавание недоступно.'
-        if mime.startswith('text/') or suffix in ('.txt','.md','.csv'):
-            try: return Path(path).read_text(errors='replace')[:180000], 'Текст прочитан локально.'
-            except Exception: pass
-        if suffix in ('.docx','.odt'):
+        try:return await asyncio.wait_for(asyncio.to_thread(inspect_file,path,mime,filename),15)
+        except Exception:
+            return '', 'Не удалось прочитать содержимое: файл повреждён, защищён, слишком сложен или формат не поддерживается. Оригинал сохранён; имя и расширение учитываются.'
+
+    async def retry_loop(self):
+        while True:
             try:
-                member='word/document.xml' if suffix=='.docx' else 'content.xml'
-                with zipfile.ZipFile(path) as archive:
-                    info=archive.getinfo(member)
-                    if info.file_size>2*1024*1024:return '', 'Документ слишком сложный для предварительного анализа. Добавьте пояснение.'
-                    root=ET.fromstring(archive.read(member))
-                paragraphs=[]
-                for p in root.iter():
-                    if p.tag.split('}')[-1] in ('p','h'):
-                        value=''.join(p.itertext()).strip()
-                        if value:paragraphs.append(value)
-                        if len(paragraphs)>=80 or sum(map(len,paragraphs))>40000:break
-                text='\n\n'.join(paragraphs)[:40000]
-                return text, 'Прочитано начало документа: до 80 абзацев. Оригинал сохранён.' if text else 'Не удалось извлечь текст. Оригинал сохранён.'
-            except Exception:return '', 'Не удалось прочитать документ. Оригинал сохранён.'
-        if mime.startswith('audio/') or suffix in ('.ogg','.mp3','.m4a','.wav','.opus'):
-            return await self.transcribe(path,filename)
-        return '', 'Оригинал сохранён; добавьте пояснение для поиска по содержимому.'
+                with self.store.db() as db:
+                    rows=db.execute('SELECT user_id,item_id FROM analysis_retries WHERE next_attempt<=? AND attempts<=2 ORDER BY next_attempt LIMIT 3',(time.time(),)).fetchall()
+                    for row in rows:db.execute('UPDATE analysis_retries SET next_attempt=? WHERE user_id=? AND item_id=?',(time.time()+3600,row['user_id'],row['item_id']))
+                await asyncio.gather(*(self.index(row['user_id'],row['item_id'],force=True) for row in rows))
+            except asyncio.CancelledError:raise
+            except Exception:pass
+            await asyncio.sleep(5)

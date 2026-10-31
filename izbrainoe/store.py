@@ -36,6 +36,8 @@ class Store:
             CREATE TABLE IF NOT EXISTS vault(user_id INTEGER PRIMARY KEY,version INTEGER NOT NULL,
               envelope TEXT NOT NULL,updated REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS vault_lookup(user_id INTEGER PRIMARY KEY,tokens TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS analysis_retries(user_id INTEGER NOT NULL,item_id TEXT NOT NULL,attempts INTEGER NOT NULL,next_attempt REAL NOT NULL,PRIMARY KEY(user_id,item_id));
+            CREATE TABLE IF NOT EXISTS format_rules(user_id INTEGER NOT NULL,extension TEXT NOT NULL,folder TEXT NOT NULL,source_item TEXT NOT NULL,PRIMARY KEY(user_id,extension));
             CREATE TABLE IF NOT EXISTS modes(user_id INTEGER PRIMARY KEY,mode TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS message_links(user_id INTEGER NOT NULL,message_id INTEGER NOT NULL,item_id TEXT NOT NULL,
               PRIMARY KEY(user_id,message_id));
@@ -186,7 +188,7 @@ class Store:
         return self.get(uid,item_id)
 
     def update(self, uid, item_id, **values):
-        allowed={'title','body','context','manual_groups','groups_json','extraction','bot_message','embedding','embed_model','deleted','analysis_json','analysis_state','path','mime','filename','digest','source_label','original_caption'}
+        allowed={'kind','title','body','context','manual_groups','groups_json','extraction','bot_message','embedding','embed_model','deleted','analysis_json','analysis_state','path','mime','filename','digest','source_label','original_caption'}
         values={k:v for k,v in values.items() if k in allowed}
         values['updated']=time.time()
         with self.db() as c:
@@ -345,3 +347,15 @@ class Store:
 
     def retry_expiring(self,uid,mid,when):
         with self.db() as c:c.execute('UPDATE expiring_messages SET next_attempt=? WHERE user_id=? AND message_id=?',(when,uid,mid))
+
+    def set_format_rules(self,uid,folder,extensions,source_item):
+        from .folders import primary_folder
+        normalized=primary_folder([folder])
+        if not normalized:return
+        with self.db() as c:
+            c.executemany('INSERT OR REPLACE INTO format_rules VALUES(?,?,?,?)',[(uid,e,normalized[0],source_item) for e in extensions])
+
+    def format_rule(self,uid,extension):
+        with self.db() as c:
+            row=c.execute('SELECT r.folder FROM format_rules r JOIN items i ON i.id=r.source_item AND i.user_id=r.user_id WHERE r.user_id=? AND r.extension=? AND i.deleted IS NULL',(uid,extension)).fetchone()
+            return row[0] if row else ''

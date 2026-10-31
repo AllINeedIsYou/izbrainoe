@@ -10,6 +10,7 @@ from .provod import Provod
 from .analysis_policy import Analysis,SYSTEM,REVIEW,review_reasons
 from .research import PublicResearch
 from .folders import primary_folder,single_folder_analysis
+from .file_intelligence import format_hint,content_hint,stabilize_folder
 
 TYPE_LABELS={'essay':'Сочинения','сочинение':'Сочинения','сочинения':'Сочинения',
              'задачи':'Задачи','задача':'Задачи','конспект':'Конспекты','лекция':'Лекции',
@@ -130,12 +131,13 @@ class PersonalAnalyzer:
         cacheable=cloud.enabled and (bool(item.get('digest')) if is_file else len(item.get('body',''))>=35)
         if not cacheable:
             result=await self._analyse(item,fallback,vector)
+            result=stabilize_folder(item,result)
             result['elapsed_ms']=round((time.monotonic()-start)*1000)
             return result
         memories=self.store.memories(item['user_id'])
-        fingerprint={'policy':'vision-v4-topic-folders','provider':self.config.ai_provider,'model':self.config.gemini_model,
+        fingerprint={'policy':'portable-files-v5','provider':self.config.ai_provider,'model':self.config.gemini_model,
                      'web':self.config.web_lookup,'digest':item.get('digest',''),'kind':item['kind'],
-                     'title':item['title'] if not is_file else '', 'body':item['body'],'context':item['context'],
+                     'title':item['title'] if not is_file else item.get('filename',''), 'format_rule':self.store.format_rule(item['user_id'],format_hint(item)['extension']), 'body':item['body'],'context':item['context'],
                      'groups':item['groups_json'] if item['manual_groups'] else '',
                      'memories':[(m['item_id'],m['updated'],m['context'],m['groups_json']) for m in memories]}
         key=hashlib.sha256(json.dumps(fingerprint,ensure_ascii=False,sort_keys=True).encode()).hexdigest()
@@ -152,6 +154,7 @@ class PersonalAnalyzer:
                         c.execute('INSERT OR REPLACE INTO analysis_cache VALUES(?,?,?,?)',
                                   (item['user_id'],key,json.dumps(result,ensure_ascii=False),time.time()))
                         c.execute('DELETE FROM analysis_cache WHERE created<?',(time.time()-7*86400,))
+            result=stabilize_folder(item,result)
             result['elapsed_ms']=round((time.monotonic()-start)*1000)
             return result
 
@@ -159,6 +162,17 @@ class PersonalAnalyzer:
         cloud=self.provod if self.config.ai_provider=='provod' else self.gemini
         text=item['title']+'\n'+item['body'];context=item['context']
         kind,subject=grounded_features(text,context)
+        hint=format_hint(item)
+        rule=self.store.format_rule(item['user_id'],hint['extension'])
+        semantic,semantic_type=content_hint(text,context)
+        if semantic:fallback=primary_folder([semantic])
+        elif not fallback:fallback=primary_folder([hint['folder']])
+        if (hint['fixed_default'] or rule) and not context.strip():
+            folder=rule or hint['folder']
+            result=Analysis(document_type=hint['document_type'],groups=primary_folder([folder]),
+                summary=(item['body'][:500] or item.get('filename') or item['title']),evidence=[item.get('filename') or item['title']],confidence=.99)
+            d=single_folder_analysis(result.model_dump());d.update(method='format_rules',cloud={'status':'not_needed','images':0},web={'status':'not_needed','sources':[]},memory_examples_used=0)
+            return d
         memories=self.store.memories(item['user_id'])
         scored=[]
         for m in memories:
@@ -170,17 +184,17 @@ class PersonalAnalyzer:
         scored.sort(key=lambda x:x[0],reverse=True)
         examples=[{'material':m['body'][:320] or m['title'],'explanation':m['context'][:320],
                    'groups':json.loads(m['groups_json'])} for _,m in scored[:2]]
-        result=Analysis(document_type=kind,subject=subject,groups=canonical_groups(kind,subject,[],fallback),
-                        summary='',confidence=.8 if kind and subject else .55 if fallback else .2)
+        result=Analysis(document_type=kind or semantic_type or hint['document_type'],subject=subject,groups=canonical_groups(kind,subject,[],fallback),
+                        summary='',confidence=.8 if kind and subject or semantic else .65 if fallback else .2)
         method='local_rules'
         reference={'status':'not_needed','sources':[]}
         # A bare opaque filename does not contain content to reason about.
-        enough=len((item['body']+' '+context).strip())>=35 or bool(context) or (cloud.enabled and bool(item.get('path')) and (item['kind']=='photo' or item.get('mime','').startswith('image/') or item.get('filename','').lower().endswith('.pdf')))
+        enough=bool(hint['folder']) or len((item['body']+' '+context).strip())>=35 or bool(context) or (cloud.enabled and bool(item.get('path')) and (item['kind']=='photo' or item.get('mime','').startswith('image/') or item.get('filename','').lower().endswith('.pdf')))
         cloud_meta={'status':'disabled'}
         cloud_done=False
         if enough:
             content='\n'.join(part[:1400] for part in re.split(r'\[Страница \d+\]',item['body'])[:5])[:6500]
-            payload={'filename_or_title':item['title'],'content':content,'user_explanation':context[:1600],
+            payload={'filename_or_title':item['title'],'original_filename':item.get('filename',''),'mime_type':item.get('mime',''),'file_hints':hint,'default_folder':rule,'content':content,'user_explanation':context[:1600],
                      'existing_folders':self.store.folder_names(item['user_id'])[:24],
                      'personal_examples':examples,'current_manual_groups':json.loads(item['groups_json']) if item['manual_groups'] else [],
                      'public_type_reference':reference.get('sources',[])[:2]}
@@ -263,7 +277,9 @@ class PersonalAnalyzer:
                         result=candidate;method='local_model'
                 except Exception:method='local_rules_model_unavailable'
         if result.document_type=='расписание':result.subject=''
-        if result.needs_context and result.confidence<.65:result.groups=[]
+        if result.needs_context and result.confidence<.65:
+            if hint['folder'] and not context.strip():result.groups=primary_folder([semantic or rule or hint['folder']])
+            else:result.groups=[]
         elif not cloud_done or not result.groups:result.groups=canonical_groups(result.document_type,result.subject,result.groups,fallback)
         # Carry a personal subject to a genuinely matching type, not to unrelated documents.
         if result.document_type.lower() in ('сочинение','essay') and not result.subject and not result.needs_context:
@@ -278,6 +294,7 @@ class PersonalAnalyzer:
             if m['manual_groups'] and mk and mk==result.document_type and ((ms and ms==result.subject) or similarity>=.65):
                 preferred.append(tuple(json.loads(m['groups_json'])))
         if preferred and len(set(preferred))==1:result.groups=primary_folder(preferred[0])
+        if rule and not context.strip():result.groups=primary_folder([rule])
         d=single_folder_analysis(result.model_dump());d.update(method=method,model=self.config.gemini_model if method=='gemini' else self.config.chat_model if method=='local_model' else '',memory_examples_used=len(examples),cloud=cloud_meta)
         d['web']=reference
         return d
