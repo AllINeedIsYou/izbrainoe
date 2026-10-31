@@ -1,6 +1,6 @@
 <p align="center"><img src="assets/logo.png" width="128" alt="Изbrainое"></p>
 
-# Изbrainое — личная внешняя память в Telegram
+# Изbrainое — личная внешняя память в Telegram(AI project)
 
 **Пересылай важное в один чат. Возвращайся к нему через понятные подборки и поиск своим языком.**
 
