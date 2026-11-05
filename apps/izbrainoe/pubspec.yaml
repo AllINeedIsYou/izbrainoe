@@ -1,7 +1,7 @@
 name: izbrainoe
 description: Личная память — файлы, заметки и пароли на своих устройствах.
 publish_to: none
-version: 0.2.1+4
+version: 0.2.2+5
 environment:
   sdk: '>=3.13.0 <4.0.0'
 dependencies:

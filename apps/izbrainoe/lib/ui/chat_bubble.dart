@@ -2,7 +2,6 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
-import 'package:image/image.dart' as image;
 
 import '../core/archive_store.dart';
 import '../core/controller.dart';
@@ -27,6 +26,28 @@ class ChatBubble extends StatefulWidget {
 class _ChatBubbleState extends State<ChatBubble> {
   double dx = 0;
   bool deleting = false;
+  late Future<Uint8List?> _preview;
+  late double _aspect;
+  @override
+  void initState() {
+    super.initState();
+    _loadMedia();
+  }
+
+  void _loadMedia() {
+    _aspect = widget.brain.photoRatio(record) ?? 1;
+    _preview = widget.brain.preview(record);
+  }
+
+  @override
+  void didUpdateWidget(covariant ChatBubble old) {
+    super.didUpdateWidget(old);
+    if (old.record.blob?['hash'] != record.blob?['hash'] ||
+        old.brain != widget.brain) {
+      _loadMedia();
+    }
+  }
+
   ArchiveRecord get record => widget.record;
   Future<void> remove() async {
     if (deleting) return;
@@ -50,18 +71,17 @@ class _ChatBubbleState extends State<ChatBubble> {
       child: Padding(
         padding: const EdgeInsets.only(bottom: 7),
         child: GestureDetector(
-          onLongPressStart: (_) => setState(() => dx = 0),
-          onLongPressMoveUpdate: (d) =>
-              setState(() => dx = d.offsetFromOrigin.dx.clamp(-90, 0)),
-          onLongPressEnd: (_) {
-            final removeNow = dx < -48;
+          onHorizontalDragStart: (_) => setState(() => dx = 0),
+          onHorizontalDragUpdate: (d) =>
+              setState(() => dx = (dx + d.delta.dx).clamp(-90, 0)),
+          onHorizontalDragCancel: () => setState(() => dx = 0),
+          onHorizontalDragEnd: (d) {
+            final removeNow =
+                dx < -48 || (dx < -18 && (d.primaryVelocity ?? 0) < -650);
             setState(() => dx = 0);
-            if (removeNow) {
-              remove();
-            } else {
-              showRecordActions(context, widget.brain, record);
-            }
+            if (removeNow) remove();
           },
+          onLongPress: () => showRecordActions(context, widget.brain, record),
           child: Stack(
             alignment: Alignment.centerRight,
             children: [
@@ -200,90 +220,73 @@ class _ChatBubbleState extends State<ChatBubble> {
       ),
     ),
   );
-  Widget _photo(
-    BuildContext context,
-    double maxWidth,
-  ) => FutureBuilder<Uint8List?>(
-    future: widget.brain.preview(record),
-    builder: (context, snapshot) {
-      if (snapshot.data == null) {
-        return SizedBox(
-          width: min(maxWidth, 210),
-          height: 200,
-          child: Material(
-            color: surface,
-            borderRadius: BorderRadius.circular(16),
-            child: InkWell(
-              onTap: widget.onTap,
-              child: Stack(
-                children: [
-                  const Center(child: Icon(Icons.image_outlined, size: 32)),
-                  Positioned(right: 7, bottom: 7, child: _meta(overlay: true)),
-                ],
-              ),
-            ),
-          ),
-        );
-      }
-      final info = image
-          .findDecoderForData(snapshot.data!)
-          ?.startDecode(snapshot.data!);
-      final ratio = info == null ? 1.0 : info.width / info.height;
-      final maxHeight = min(500.0, MediaQuery.sizeOf(context).height * .58);
-      final width = min(maxWidth, maxHeight * ratio), height = width / ratio;
-      final caption = record.data['context'] as String? ?? '';
-      return SizedBox(
-        width: width,
-        child: Material(
-          color: surface,
-          clipBehavior: Clip.antiAlias,
-          borderRadius: const BorderRadius.only(
-            topLeft: Radius.circular(16),
-            topRight: Radius.circular(16),
-            bottomLeft: Radius.circular(16),
-            bottomRight: Radius.circular(5),
-          ),
-          child: InkWell(
-            onTap: widget.onTap,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                SizedBox(
-                  width: width,
-                  height: height,
-                  child: Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      Image.memory(
-                        snapshot.data!,
-                        fit: BoxFit.contain,
-                        gaplessPlayback: true,
+  Widget _photo(BuildContext context, double maxWidth) {
+    final maxHeight = min(500.0, MediaQuery.sizeOf(context).height * .58);
+    final width = min(maxWidth, maxHeight * _aspect), height = width / _aspect;
+    final caption = record.data['context'] as String? ?? '';
+    // Geometry is decided before loading. A thumbnail never resizes the row.
+    return SizedBox(
+      width: width,
+      child: Material(
+        color: surface,
+        clipBehavior: Clip.antiAlias,
+        borderRadius: const BorderRadius.only(
+          topLeft: Radius.circular(16),
+          topRight: Radius.circular(16),
+          bottomLeft: Radius.circular(16),
+          bottomRight: Radius.circular(5),
+        ),
+        child: InkWell(
+          onTap: widget.onTap,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
+                width: width,
+                height: height,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    FutureBuilder<Uint8List?>(
+                      future: _preview,
+                      initialData: widget.brain.cachedPreview(record),
+                      builder: (context, snapshot) {
+                        if (snapshot.data == null) {
+                          return const Center(
+                            child: Icon(Icons.image_outlined, size: 32),
+                          );
+                        }
+                        return Image.memory(
+                          snapshot.data!,
+                          fit: BoxFit.contain,
+                          gaplessPlayback: true,
+                        );
+                      },
+                    ),
+                    if (caption.isEmpty)
+                      Positioned(
+                        right: 6,
+                        bottom: 6,
+                        child: _meta(overlay: true),
                       ),
-                      if (caption.isEmpty)
-                        Positioned(
-                          right: 6,
-                          bottom: 6,
-                          child: _meta(overlay: true),
-                        ),
+                  ],
+                ),
+              ),
+              if (caption.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(10, 8, 8, 5),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(caption, style: const TextStyle(fontSize: 14)),
+                      Align(alignment: Alignment.centerRight, child: _meta()),
                     ],
                   ),
                 ),
-                if (caption.isNotEmpty)
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(10, 8, 8, 5),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Text(caption, style: const TextStyle(fontSize: 14)),
-                        Align(alignment: Alignment.centerRight, child: _meta()),
-                      ],
-                    ),
-                  ),
-              ],
-            ),
+            ],
           ),
         ),
-      );
-    },
-  );
+      ),
+    );
+  }
 }

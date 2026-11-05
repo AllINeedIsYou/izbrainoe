@@ -14,6 +14,7 @@ import 'intelligence.dart';
 import 'relay.dart';
 import 'setup_transfer.dart';
 import 'previews.dart';
+import 'photo_layout.dart';
 
 abstract class SecretStore {
   Future<String?> read(String name);
@@ -42,6 +43,8 @@ class BrainController extends ChangeNotifier {
   bool syncing = false, disposed = false, paused = false;
   int importing = 0;
   final Map<String, Future<Uint8List?>> _previews = {};
+  final Map<String, Uint8List> _previewBytes = {};
+  final Map<String, double> _photoAspects = {};
   final Queue<String> _queue = Queue();
   final Set<String> _scheduled = {}, _active = {}, _again = {};
   bool clearing = false, reviewingRule = false;
@@ -180,6 +183,10 @@ class BrainController extends ChangeNotifier {
     final directory = Directory(p.join(root.path, cipher.archiveId));
     archive = ArchiveStore(directory, cipher, deviceId);
     await archive.load();
+    _previews.clear();
+    _previewBytes.clear();
+    _photoAspects.clear();
+    await _ensurePhotoLayouts();
     final profile = File(p.join(directory.path, 'profile.enc'));
     settings = await profile.exists()
         ? await cipher.openJson(await profile.readAsBytes(), 'profile')
@@ -311,6 +318,7 @@ class BrainController extends ChangeNotifier {
               onProgress?.call('Проверяю и сохраняю файлы…', done / total),
         );
       }
+      await _ensurePhotoLayouts();
       onProgress?.call('Подключаю Gemini…', null);
       await saveSettings(
         key: setup['provod_key'] as String,
@@ -342,7 +350,10 @@ class BrainController extends ChangeNotifier {
     try {
       final before = vaultRecord?.heads.map((r) => r.id).join(',');
       final result = await _relay!.sync();
-      if (result.downloaded > 0) _previews.clear();
+      if (result.downloaded > 0) {
+        _previews.clear();
+        await _ensurePhotoLayouts();
+      }
       if (vaultOpen &&
           before != vaultRecord?.heads.map((r) => r.id).join(',')) {
         lockVault();
@@ -416,7 +427,18 @@ class BrainController extends ChangeNotifier {
         }
         return archive.get(duplicate.id)!;
       }
+      double? aspect;
+      if (kindFor(filename) == 'photo') {
+        final input = await source.open();
+        try {
+          aspect = photoAspect(await input.read(1024 * 1024));
+        } finally {
+          await input.close();
+        }
+        if (aspect != null) _photoAspects[blob['hash'] as String] = aspect;
+      }
       final record = await archive.save({
+        'photo_aspect': ?aspect,
         'title': filename,
         'filename': filename,
         'kind': kindFor(filename),
@@ -717,6 +739,8 @@ class BrainController extends ChangeNotifier {
       }
       _scheduled.clear();
       _previews.clear();
+      _previewBytes.clear();
+      _photoAspects.clear();
       for (final name in [
         'provod_key',
         'disk_token',
@@ -1359,6 +1383,79 @@ class BrainController extends ChangeNotifier {
     kickSync();
     changed();
   });
+  Uint8List? cachedPreview(ArchiveRecord record) =>
+      _previewBytes[record.blob?['hash']];
+  double? photoRatio(ArchiveRecord record) {
+    final stored = record.data['photo_aspect'];
+    if (stored is num && stored.isFinite && stored > 0) {
+      return stored.toDouble();
+    }
+    return _photoAspects[record.blob?['hash']];
+  }
+
+  Future<void> _ensurePhotoLayouts() async {
+    final index = File(p.join(archive.directory.path, 'photo-layouts.enc'));
+    if (await index.exists()) {
+      try {
+        final saved = await archive.cipher.openJson(
+          await index.readAsBytes(),
+          'photo-layouts',
+        );
+        for (final entry in saved.entries) {
+          if (validDigest(entry.key) &&
+              entry.value is num &&
+              (entry.value as num).isFinite &&
+              (entry.value as num) > 0) {
+            _photoAspects[entry.key] = (entry.value as num).toDouble();
+          }
+        }
+      } catch (_) {}
+    }
+    var updated = false;
+    for (final r in materials.where(
+      (r) => r.kind == 'photo' && r.blob != null,
+    )) {
+      if (photoRatio(r) != null) continue;
+      final hash = r.blob!['hash'] as String;
+      try {
+        final cached = File(
+          p.join(archive.directory.path, 'previews', '$hash.enc'),
+        );
+        Uint8List? bytes;
+        if (await cached.exists()) {
+          bytes = await archive.cipher.open(
+            await cached.readAsBytes(),
+            'preview:$hash',
+          );
+        } else if ((r.blob!['chunks'] as int) > 0) {
+          bytes = await archive.cipher.open(
+            await archive.encryptedChunk(hash, 0),
+            'blob:$hash:0',
+          );
+        }
+        final aspect = bytes == null ? null : photoAspect(bytes);
+        if (aspect != null) {
+          _photoAspects[hash] = aspect;
+          updated = true;
+        }
+      } catch (_) {}
+    }
+    if (updated) {
+      await atomicWrite(
+        index,
+        await archive.cipher.sealJson(_photoAspects, 'photo-layouts'),
+      );
+    }
+  }
+
+  Uint8List _rememberPreview(String hash, Uint8List bytes) {
+    if (_previewBytes.length >= 60) {
+      _previewBytes.remove(_previewBytes.keys.first);
+    }
+    _previewBytes[hash] = bytes;
+    return bytes;
+  }
+
   Future<Uint8List?> preview(ArchiveRecord record) {
     final hash = record.blob?['hash'] as String?;
     if (hash == null || clearing) return Future.value(null);
@@ -1374,10 +1471,14 @@ class BrainController extends ChangeNotifier {
             p.join(owner.directory.path, 'previews', '$hash.enc'),
           );
           if (await cached.exists()) {
-            return await owner.cipher.open(
+            final bytes = await owner.cipher.open(
               await cached.readAsBytes(),
               'preview:$hash',
             );
+            if (generation == _generation && !clearing) {
+              _rememberPreview(hash, bytes);
+            }
+            return bytes;
           }
           if (!await owner.hasBlob(record.blob!)) return null;
           clear = await owner.materialize(
@@ -1394,6 +1495,9 @@ class BrainController extends ChangeNotifier {
               cached,
               await owner.cipher.seal(bytes, 'preview:$hash'),
             );
+          }
+          if (bytes != null && generation == _generation && !clearing) {
+            _rememberPreview(hash, bytes);
           }
           return bytes;
         } catch (_) {
@@ -1427,6 +1531,7 @@ class BrainController extends ChangeNotifier {
   Future<File> backup() => ArchiveBackup.export(archive, temporary);
   Future<void> restoreBackup(File file) async {
     await ArchiveBackup.import(file, archive);
+    await _ensurePhotoLayouts();
     kickSync();
     changed();
   }

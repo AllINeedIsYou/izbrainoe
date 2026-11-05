@@ -235,12 +235,16 @@ class _HomeState extends State<HomeScreen> with WidgetsBindingObserver {
         top: false,
         child: Column(
           children: [
-            if (brain.importing > 0 || brain.pending > 0)
-              const LinearProgressIndicator(
-                minHeight: 2,
-                color: accent,
-                backgroundColor: surface,
-              ),
+            SizedBox(
+              height: 2,
+              child: brain.importing > 0 || brain.pending > 0
+                  ? const LinearProgressIndicator(
+                      minHeight: 2,
+                      color: accent,
+                      backgroundColor: surface,
+                    )
+                  : null,
+            ),
             Expanded(
               child: tab == 0
                   ? _chat()
@@ -299,7 +303,11 @@ class _HomeState extends State<HomeScreen> with WidgetsBindingObserver {
         ),
       );
     }
+    final indices = {for (var i = 0; i < items.length; i++) items[i].id: i};
     return ListView.builder(
+      key: PageStorageKey('saved-chat:${brain.archive.cipher.archiveId}'),
+      findChildIndexCallback: (key) =>
+          key is ValueKey<String> ? indices[key.value] : null,
       controller: scroll,
       reverse: true,
       padding: const EdgeInsets.fromLTRB(14, 14, 14, 18),
@@ -316,6 +324,7 @@ class _HomeState extends State<HomeScreen> with WidgetsBindingObserver {
                     items[i + 1].current.created,
               );
         return Column(
+          key: ValueKey(record.id),
           children: [
             if (previous != date)
               Padding(
