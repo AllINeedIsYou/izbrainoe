@@ -192,7 +192,12 @@ class _HomeState extends State<HomeScreen> with WidgetsBindingObserver {
           children: [
             ClipRRect(
               borderRadius: BorderRadius.circular(11),
-              child: const Icon(Icons.bookmark_outline, size: 32),
+              child: Image.asset(
+                'assets/logo.png',
+                width: 34,
+                height: 34,
+                filterQuality: FilterQuality.high,
+              ),
             ),
             const SizedBox(width: 11),
             const Flexible(

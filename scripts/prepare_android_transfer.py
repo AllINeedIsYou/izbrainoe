@@ -181,9 +181,10 @@ def serve(open_browser=True):
     output=io.BytesIO();qr.make_image(fill_color='black',back_color='white').save(output,format='PNG')
     private_write(PRIVATE/'setup-qr.png',output.getvalue())
     image=base64.b64encode(output.getvalue()).decode()
+    brand=base64.b64encode((ROOT/'izbrainoe/static/logo.png').read_bytes()).decode()
     html=f'''<!doctype html><meta charset="utf-8"><meta name="referrer" content="no-referrer"><title>Настройка Изbrainого</title>
 <style>body{{background:#10151e;color:#f0f3ed;font:17px -apple-system,sans-serif;max-width:650px;margin:40px auto;padding:20px;text-align:center}}img{{width:min(100%,460px);border-radius:18px}}h1{{font-size:30px}}p{{color:#a5b2ad;line-height:1.6}}strong{{color:#c0f58c}}</style>
-<h1>Твоё Изbrainое — на телефоне</h1><p>Установи APK. В приложении открой<br><strong>Настройки → Перенести с Mac</strong><br>и наведи камеру на этот код.</p>
+<img alt="Изbrainое" style="width:88px;height:88px;border-radius:20px" src="data:image/png;base64,{brand}"><h1>Твоё Изbrainое — на телефоне</h1><p>Установи APK. В приложении открой<br><strong>Настройки → Перенести с Mac</strong><br>и наведи камеру на этот код.</p>
 <img alt="Личный код переноса" src="data:image/png;base64,{image}"><p>Будут перенесены {snapshot['items']} записей, {snapshot['files']} оригиналов и настройки Gemini.<br>Главный пароль хранилища остаётся прежним.</p>
 <p>Телефон и Mac должны быть в одной домашней сети.<br>Код действует 8 часов. Не пересылай его другим людям.</p>'''
     private_write(PRIVATE/'Настройка.html',html.encode())

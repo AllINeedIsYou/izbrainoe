@@ -31,10 +31,11 @@ def main():
         iconset = Path(temp) / 'AppIcon.iconset'
         iconset.mkdir()
         logo = ROOT / 'izbrainoe/static/logo.png'
-        for size in (16, 32, 128, 256):
-            subprocess.run(['sips', '-z', str(size), str(size), str(logo), '--out', str(iconset / f'icon_{size}x{size}.png')], check=True, stdout=subprocess.DEVNULL)
-        for size in (16, 128):
-            shutil.copyfile(iconset / f'icon_{size*2}x{size*2}.png', iconset / f'icon_{size}x{size}@2x.png')
+        for size in (16, 32, 128, 256, 512):
+            for scale in (1, 2):
+                suffix = '@2x' if scale == 2 else ''
+                pixels = str(size * scale)
+                subprocess.run(['sips', '-z', pixels, pixels, str(logo), '--out', str(iconset / f'icon_{size}x{size}{suffix}.png')], check=True, stdout=subprocess.DEVNULL)
         subprocess.run(['iconutil', '-c', 'icns', str(iconset), '-o', str(resources / 'AppIcon.icns')], check=True)
         (contents / 'Info.plist').write_bytes(plistlib.dumps({
             'CFBundleIdentifier': 'local.izbrainoe.launcher', 'CFBundleName': 'Изbrainое',

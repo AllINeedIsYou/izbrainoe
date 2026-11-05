@@ -1,0 +1,6 @@
+{
+  "tool": "Built-in image_gen",
+  "reference": "space-01.png",
+  "result": "space-01-v2.png",
+  "prompt": "Use case: logo-brand. Edit target: the supplied first black-hole app logo for Изbrainое. Refine this exact chosen concept rather than inventing another subject. The user says the silhouette feels too floral. Remove the petal/flower impression decisively: make a single clean circular BLACK event-horizon void the visual anchor, with ONE flatter, more purposeful white accretion disk slicing across its lower middle, and ONE integrated gravitational-lensing arch above the void. Remove the separate decorative floating upper crescent from the reference; avoid stacked nested petal-like arches. The top white arch should flow continuously into the accretion disk on both sides, with a restrained asymmetry in its thickness; the thin lower rim can be partial or largely disappear into black. Emphasize an astrophysical black hole seen edge-on, not a flower, lotus, eye, ordinary Saturn planet, fan or camera. Keep the recognizable overall horizontal disk + central void composition, pure white on a deep flat black square, centered with generous icon-safe margins, crisp smooth vector-like contours, strong legibility at 48px. No other celestial objects, no labels, no text, no numbers, no watermark, no color, no 3D mockup. Less ornament, bolder coherent silhouette."
+}
