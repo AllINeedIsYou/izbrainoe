@@ -13,3 +13,7 @@ work/
 *.pyc
 
 ai-settings.json
+
+# Android build artifacts and local transfer helpers
+*.apk
+*.aab

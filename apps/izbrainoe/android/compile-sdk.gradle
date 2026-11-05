@@ -1,0 +1,10 @@
+// receive_sharing_intent 1.9.0 requests the nonexistent hash android-37;
+// SDK 37 is distributed as android-37.0. Its share receiver uses only older APIs.
+// Keep this pinned plugin on our supported, installed API 36 until its DSL is fixed.
+subprojects { project ->
+    project.afterEvaluate {
+        if (project.name == 'receive_sharing_intent') {
+            project.android.compileSdkVersion 36
+        }
+    }
+}
