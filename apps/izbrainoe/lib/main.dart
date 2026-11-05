@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -6,11 +7,14 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import 'core/controller.dart';
+import 'core/share_inbox.dart';
 import 'ui/home.dart';
 import 'ui/widgets.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  final shares = Platform.isAndroid ? ShareInbox() : null;
+  if (shares != null) unawaited(shares.start());
   BrainController? controller;
   String? failure;
   try {
@@ -26,14 +30,19 @@ Future<void> main() async {
     failure = BrainController.friendly(e);
   }
   runApp(
-    BrainApp(controller: failure == null ? controller : null, failure: failure),
+    BrainApp(
+      controller: failure == null ? controller : null,
+      failure: failure,
+      shares: shares,
+    ),
   );
 }
 
 class BrainApp extends StatelessWidget {
   final BrainController? controller;
   final String? failure;
-  const BrainApp({super.key, this.controller, this.failure});
+  final ShareInbox? shares;
+  const BrainApp({super.key, this.controller, this.failure, this.shares});
   @override
   Widget build(BuildContext context) => MaterialApp(
     title: 'Изbrainое',
@@ -43,7 +52,7 @@ class BrainApp extends StatelessWidget {
     localizationsDelegates: GlobalMaterialLocalizations.delegates,
     theme: brainTheme(),
     home: controller != null
-        ? HomeScreen(brain: controller!)
+        ? HomeScreen(brain: controller!, shares: shares)
         : Scaffold(
             body: SafeArea(
               child: Center(

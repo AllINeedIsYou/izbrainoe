@@ -718,16 +718,31 @@ class BrainController extends ChangeNotifier {
     }
   }
 
+  static Set<String> serviceWords(String text) =>
+      RegExp(r'[\p{L}\p{N}_]+', unicode: true)
+          .allMatches(text.toLowerCase().replaceAll('ё', 'е'))
+          .map((m) => m.group(0)!)
+          .where((w) => w.length > 1)
+          .take(64)
+          .toSet();
   bool credentialQuery(String query) {
-    final q = query.toLowerCase().replaceAll(
-      RegExp(r'данные|пароль|логин|найди|покажи|\s+'),
-      '',
+    var q = query.trim().toLowerCase();
+    final command = RegExp(
+      r'^(?:данные|пароль|логин|найди|покажи)(?:\s+|$)',
+      caseSensitive: false,
     );
-    if (q.isEmpty) return false;
+    while (command.hasMatch(q)) {
+      q = q.replaceFirst(command, '').trim();
+    }
+    final wanted = serviceWords(q);
+    if (wanted.isEmpty) return false;
     final services = (vaultRecord?.data['services'] as List? ?? [])
         .whereType<String>();
-    return services.any(
-      (s) => s.toLowerCase().replaceAll(RegExp(r'\s+'), '') == q,
+    if (services.any((s) => serviceWords(s).containsAll(wanted))) return true;
+    final hashes = wanted.map((w) => digest(utf8.encode(w))).toSet();
+    final lookup = vaultRecord?.data['lookup_tokens'] as List? ?? [];
+    return lookup.whereType<List>().any(
+      (entry) => entry.whereType<String>().toSet().containsAll(hashes),
     );
   }
 
@@ -823,8 +838,13 @@ class BrainController extends ChangeNotifier {
     final master = _vaultPassword!, record = vaultRecord;
     final entries = List<dynamic>.from(_vault!['entries'] as List),
         key = id ?? newId();
+    final previous = entries
+        .whereType<Map>()
+        .where((e) => e['id'] == key)
+        .firstOrNull;
     entries.removeWhere((e) => (e as Map)['id'] == key);
     entries.add({
+      ...?previous,
       'id': key,
       'service': service.trim(),
       'login': login,
@@ -844,6 +864,16 @@ class BrainController extends ChangeNotifier {
         'kind': 'vault',
         'title': 'Хранилище паролей',
         'envelope': envelope,
+        'lookup_tokens': entries
+            .whereType<Map>()
+            .where((e) => e['deleted'] != true)
+            .map(
+              (e) =>
+                  serviceWords('${e['service']} ${e['aliases'] ?? ''}')
+                      .map((w) => digest(utf8.encode(w)))
+                      .toList(),
+            )
+            .toList(),
         'services': entries
             .where((e) => (e as Map)['deleted'] != true)
             .map((e) => (e as Map)['service'])

@@ -170,14 +170,14 @@ class SurfaceBox extends StatelessWidget {
     this.padding = const EdgeInsets.all(18),
   });
   @override
-  Widget build(BuildContext context) => Container(
-    padding: padding,
-    decoration: BoxDecoration(
-      color: surface,
-      border: Border.all(color: line),
+  Widget build(BuildContext context) => Material(
+    color: surface,
+    clipBehavior: Clip.antiAlias,
+    shape: RoundedRectangleBorder(
       borderRadius: BorderRadius.circular(20),
+      side: const BorderSide(color: line),
     ),
-    child: child,
+    child: Padding(padding: padding, child: child),
   );
 }
 

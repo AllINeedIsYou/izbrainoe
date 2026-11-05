@@ -226,8 +226,9 @@ class _VaultState extends State<VaultPage> {
       final entries =
           brain.credentials
               .where(
-                (e) =>
-                    '${e['service']} ${e['login']}'.toLowerCase().contains(q),
+                (e) => '${e['service']} ${e['login']} ${e['aliases'] ?? ''}'
+                    .toLowerCase()
+                    .contains(q),
               )
               .toList()
             ..sort(

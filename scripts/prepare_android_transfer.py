@@ -64,6 +64,7 @@ def prepare():
     uid = int(owner[0]) if owner else -1
     rows = [dict(row) for row in connection.execute('SELECT * FROM items WHERE user_id=? ORDER BY created', (uid,))]
     vault = connection.execute('SELECT envelope FROM vault WHERE user_id=?', (uid,)).fetchone()
+    lookup=connection.execute('SELECT tokens FROM vault_lookup WHERE user_id=?',(uid,)).fetchone()
     connection.close()
     bundle = PRIVATE / 'Архив Изbrainого.izbrainoe'
     temporary = bundle.with_suffix('.part')
@@ -126,7 +127,7 @@ def prepare():
             envelope=json.loads(vault[0])
             if envelope:
                 revision(hashlib.sha256(f'legacy-vault:{uid}'.encode()).hexdigest()[:32],
-                         dict(kind='vault',title='Хранилище паролей',envelope=envelope,services=[]))
+                         dict(kind='vault',title='Хранилище паролей',envelope=envelope,services=[],lookup_tokens=json.loads(lookup[0]) if lookup else []))
     os.replace(temporary,bundle);os.chmod(bundle,0o600)
     metadata=dict(archive_id=archive_id,items=len(rows),files=len(blobs),missing=missing,bundle=str(bundle),prepared=time.time())
     private_write(PRIVATE/'snapshot.json',json.dumps(metadata).encode())

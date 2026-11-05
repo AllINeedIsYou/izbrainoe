@@ -39,6 +39,11 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Моя важная мысль'), findsOneWidget);
       expect(find.text('Что найти?'), findsNothing);
+      await tester.tap(find.text('Моя важная мысль'));
+      await tester.pumpAndSettle();
+      expect(find.text('Твоё пояснение'), findsOneWidget);
+      await tester.tap(find.byTooltip('Назад'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('Поиск'));
       await tester.pumpAndSettle();
       expect(find.text('Найти в архиве'), findsOneWidget);

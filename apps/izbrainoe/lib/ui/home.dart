@@ -8,6 +8,7 @@ import 'package:receive_sharing_intent/receive_sharing_intent.dart';
 
 import '../core/archive_store.dart';
 import '../core/controller.dart';
+import '../core/share_inbox.dart';
 import 'detail.dart';
 import 'search.dart';
 import 'settings.dart';
@@ -16,7 +17,8 @@ import 'widgets.dart';
 
 class HomeScreen extends StatefulWidget {
   final BrainController brain;
-  const HomeScreen({super.key, required this.brain});
+  final ShareInbox? shares;
+  const HomeScreen({super.key, required this.brain, this.shares});
   @override
   State<HomeScreen> createState() => _HomeState();
 }
@@ -32,18 +34,10 @@ class _HomeState extends State<HomeScreen> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    if (Platform.isAndroid) {
-      sharing = ReceiveSharingIntent.instance.getMediaStream().listen(
-        _receive,
-        onError: (_) {
-          if (mounted) {
-            notice(
-              context,
-              'Не удалось получить вложение. Попробуй выбрать файл в приложении.',
-            );
-          }
-        },
-      );
+    if (widget.shares != null) {
+      widget.shares!.attach(_receive);
+    } else if (Platform.isAndroid) {
+      sharing = ReceiveSharingIntent.instance.getMediaStream().listen(_receive);
       unawaited(ReceiveSharingIntent.instance.getInitialMedia().then(_receive));
     }
   }
@@ -107,6 +101,7 @@ class _HomeState extends State<HomeScreen> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    widget.shares?.detach();
     sharing?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     composer.dispose();
@@ -430,9 +425,10 @@ class _HomeState extends State<HomeScreen> with WidgetsBindingObserver {
                                 ],
                               )
                             else
-                              SelectableText(
+                              Text(
                                 record.data['body'] as String? ?? record.title,
                                 maxLines: 8,
+                                overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
                                   fontSize: 15,
                                   height: 1.45,
