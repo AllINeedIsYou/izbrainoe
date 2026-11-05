@@ -1,6 +1,11 @@
 package app.izbrainoe.izbrainoe
 
 import android.app.Activity
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
+import io.flutter.plugin.common.EventChannel
 import android.content.Intent
 import android.provider.MediaStore
 import android.provider.OpenableColumns
@@ -24,11 +29,58 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
+    private var motionSink: EventChannel.EventSink? = null
+    private var motionManager: SensorManager? = null
+    private var motionActive = false
+    private var foreground = false
+    private val motionListener = object : SensorEventListener {
+        override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+        override fun onSensorChanged(event: SensorEvent) {
+            motionSink?.success(listOf(event.timestamp / 1_000_000L,
+                event.values[0].toDouble(), event.values[1].toDouble(), event.values[2].toDouble()))
+        }
+    }
+    private fun startMotion() {
+        if (!foreground || motionActive || motionSink == null) return
+        val manager = motionManager ?: (getSystemService(SENSOR_SERVICE) as SensorManager).also { motionManager = it }
+        val sensor = manager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) ?: return
+        motionActive = manager.registerListener(motionListener, sensor, SensorManager.SENSOR_DELAY_GAME)
+    }
+    private fun stopMotion() {
+        motionManager?.unregisterListener(motionListener)
+        motionActive = false
+    }
+    override fun onResume() {
+        super.onResume()
+        foreground = true
+        startMotion()
+    }
+    override fun onPause() {
+        foreground = false
+        stopMotion()
+        super.onPause()
+    }
+    override fun onDestroy() {
+        stopMotion()
+        motionSink = null
+        super.onDestroy()
+    }
     private var secureViews = 0
     private var galleryResult: MethodChannel.Result? = null
     private val galleryRequest = 9137
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, "app.izbrainoe/motion")
+            .setStreamHandler(object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink) {
+                    motionSink = events
+                    startMotion()
+                }
+                override fun onCancel(arguments: Any?) {
+                    stopMotion()
+                    motionSink = null
+                }
+            })
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "app.izbrainoe/media")
             .setMethodCallHandler { call, result ->
                 if(call.method == "pickGallery") {

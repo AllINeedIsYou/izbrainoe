@@ -42,7 +42,14 @@ class BrainApp extends StatelessWidget {
   final BrainController? controller;
   final String? failure;
   final ShareInbox? shares;
-  const BrainApp({super.key, this.controller, this.failure, this.shares});
+  final Stream<void>? shakes;
+  const BrainApp({
+    super.key,
+    this.controller,
+    this.failure,
+    this.shares,
+    this.shakes,
+  });
   @override
   Widget build(BuildContext context) => MaterialApp(
     title: 'Изbrainое',
@@ -52,7 +59,7 @@ class BrainApp extends StatelessWidget {
     localizationsDelegates: GlobalMaterialLocalizations.delegates,
     theme: brainTheme(),
     home: controller != null
-        ? HomeScreen(brain: controller!, shares: shares)
+        ? HomeScreen(brain: controller!, shares: shares, shakes: shakes)
         : Scaffold(
             body: SafeArea(
               child: Center(

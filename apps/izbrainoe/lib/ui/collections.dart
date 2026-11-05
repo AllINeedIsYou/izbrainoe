@@ -6,6 +6,7 @@ import 'attachments.dart';
 import 'detail.dart';
 import 'material_preview.dart';
 import 'widgets.dart';
+import 'shake_listener.dart';
 
 Future<void> newFolderDialog(
   BuildContext context,
@@ -130,7 +131,14 @@ Future<void> newFolderDialog(
 
 class FoldersView extends StatefulWidget {
   final BrainController brain;
-  const FoldersView({super.key, required this.brain});
+  final Stream<void>? shakes;
+  final VoidCallback? onOpenChat;
+  const FoldersView({
+    super.key,
+    required this.brain,
+    this.shakes,
+    this.onOpenChat,
+  });
   @override
   State<FoldersView> createState() => _FoldersViewState();
 }
@@ -142,7 +150,14 @@ class _FoldersViewState extends State<FoldersView> {
   void open(String folder) => Navigator.push(
     context,
     MaterialPageRoute<void>(
-      builder: (_) => FolderPage(brain: brain, folder: folder),
+      builder: (_) => ShakeListener(
+        events: widget.shakes,
+        onShake: () {
+          Navigator.pop(context);
+          widget.onOpenChat?.call();
+        },
+        child: FolderPage(brain: brain, folder: folder),
+      ),
     ),
   );
   @override

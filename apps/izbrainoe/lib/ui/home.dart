@@ -16,11 +16,14 @@ import 'collections.dart';
 import 'attachments.dart';
 import 'chat_bubble.dart';
 import 'brand_navigation.dart';
+import 'event_horizon.dart';
+import 'shake_listener.dart';
 
 class HomeScreen extends StatefulWidget {
   final BrainController brain;
   final ShareInbox? shares;
-  const HomeScreen({super.key, required this.brain, this.shares});
+  final Stream<void>? shakes;
+  const HomeScreen({super.key, required this.brain, this.shares, this.shakes});
   @override
   State<HomeScreen> createState() => _HomeState();
 }
@@ -187,50 +190,58 @@ class _HomeState extends State<HomeScreen> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
     animation: brain,
-    builder: (context, _) => Scaffold(
-      appBar: AppBar(
-        title: BrandNavigation(
-          selected: tab,
-          onSelected: (value) => setState(() => tab = value),
-        ),
-        actions: [
-          IconButton(
-            tooltip: 'Настройки',
-            icon: const Icon(Icons.more_vert),
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute<void>(
-                builder: (_) => SettingsPage(brain: brain),
+    builder: (context, _) => ShakeListener(
+      events: widget.shakes,
+      onShake: () => setState(() => tab = tab == 2 ? 0 : 2),
+      child: Scaffold(
+        appBar: AppBar(
+          title: BrandNavigation(
+            selected: tab,
+            onSelected: (value) => setState(() => tab = value),
+          ),
+          actions: [
+            IconButton(
+              tooltip: 'Настройки',
+              icon: const Icon(Icons.more_vert),
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute<void>(
+                  builder: (_) => SettingsPage(brain: brain),
+                ),
               ),
             ),
-          ),
-        ],
-      ),
-      body: SafeArea(
-        top: false,
-        child: Column(
-          children: [
-            SizedBox(
-              height: 2,
-              child: brain.importing > 0 || brain.pending > 0
-                  ? const LinearProgressIndicator(
-                      minHeight: 2,
-                      color: accent,
-                      backgroundColor: surface,
-                    )
-                  : null,
-            ),
-            Expanded(
-              child: tab == 0
-                  ? _chat()
-                  : tab == 1
-                  ? SearchPage(brain: brain, embedded: true)
-                  : tab == 2
-                  ? FoldersView(brain: brain)
-                  : VaultPage(brain: brain),
-            ),
-            if (tab == 0) _composer(),
           ],
+        ),
+        body: SafeArea(
+          top: false,
+          child: Column(
+            children: [
+              SizedBox(
+                height: 2,
+                child: brain.importing > 0 || brain.pending > 0
+                    ? const LinearProgressIndicator(
+                        minHeight: 2,
+                        color: accent,
+                        backgroundColor: surface,
+                      )
+                    : null,
+              ),
+              Expanded(
+                child: tab == 0
+                    ? EventHorizonBackground(child: _chat())
+                    : tab == 1
+                    ? SearchPage(brain: brain, embedded: true)
+                    : tab == 2
+                    ? FoldersView(
+                        brain: brain,
+                        shakes: widget.shakes,
+                        onOpenChat: () => setState(() => tab = 0),
+                      )
+                    : VaultPage(brain: brain),
+              ),
+              if (tab == 0) _composer(),
+            ],
+          ),
         ),
       ),
     ),

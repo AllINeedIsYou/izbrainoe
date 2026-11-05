@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -35,10 +36,22 @@ void main() {
         }
       });
       await tester.binding.setSurfaceSize(const Size(360, 780));
-      await tester.pumpWidget(BrainApp(controller: brain));
+      final shakes = StreamController<void>.broadcast(sync: true);
+      await tester.pumpWidget(
+        BrainApp(controller: brain, shakes: shakes.stream),
+      );
       await tester.pumpAndSettle();
       expect(find.text('Моя важная мысль'), findsOneWidget);
       expect(find.text('Что найти?'), findsNothing);
+      shakes.add(null);
+      await tester.pumpAndSettle();
+      expect(find.text('КОЛЛЕКЦИИ'), findsOneWidget);
+      await tester.tap(find.text('Заметки').first);
+      await tester.pumpAndSettle();
+      shakes.add(null);
+      await tester.pumpAndSettle();
+      expect(find.text('КОЛЛЕКЦИИ'), findsNothing);
+      expect(find.byTooltip('Прикрепить файл'), findsOneWidget);
       await tester.tap(find.text('Моя важная мысль'));
       await tester.pumpAndSettle();
       expect(find.text('Твоё пояснение'), findsOneWidget);
@@ -84,6 +97,7 @@ void main() {
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
       brain.dispose();
+      await shakes.close();
       await tester.runAsync(() => temp.delete(recursive: true));
     },
   );
