@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -28,8 +29,9 @@ Map<String, dynamic> parseSetupCode(String raw) {
 
 Future<File?> downloadSetupArchive(
   Map<String, dynamic> setup,
-  Directory temporary,
-) async {
+  Directory temporary, {
+  void Function(int received, int total)? onProgress,
+}) async {
   if (setup['bundle_url'] == null) return null;
   final url = Uri.parse(setup['bundle_url'] as String),
       pin = setup['certificate_sha256'] as String? ?? '';
@@ -58,7 +60,9 @@ Future<File?> downloadSetupArchive(
     ..badCertificateCallback = (certificate, host, port) =>
         host == url.host && port == url.port && digest(certificate.der) == pin;
   try {
-    final request = await client.getUrl(url);
+    final request = await client
+        .getUrl(url)
+        .timeout(const Duration(seconds: 15));
     request.followRedirects = false;
     final response = await request.close().timeout(const Duration(seconds: 20));
     if (response.certificate == null ||
@@ -77,6 +81,7 @@ Future<File?> downloadSetupArchive(
     }
     final writer = output.openWrite();
     var count = 0;
+    onProgress?.call(0, response.contentLength);
     try {
       await for (final block in response.timeout(const Duration(seconds: 30))) {
         count += block.length;
@@ -84,14 +89,20 @@ Future<File?> downloadSetupArchive(
           throw const FormatException('Слишком большой архив.');
         }
         writer.add(block);
+        onProgress?.call(count, response.contentLength);
       }
       await writer.flush();
     } finally {
       await writer.close();
     }
     return output;
-  } catch (_) {
+  } catch (error) {
     if (await output.exists()) await output.delete();
+    if (error is SocketException || error is TimeoutException) {
+      throw const FormatException(
+        "Телефон не смог получить архив с Mac. Подключи оба устройства к одной Wi-Fi сети, временно отключи VPN и заново открой «Перенести с Mac.command». Затем повтори перенос.",
+      );
+    }
     rethrow;
   } finally {
     client.close(force: true);

@@ -16,7 +16,7 @@ class SetupScannerPage extends StatefulWidget {
 class _SetupScannerState extends State<SetupScannerPage> {
   final camera = MobileScannerController(
     formats: [BarcodeFormat.qrCode],
-    detectionSpeed: DetectionSpeed.noDuplicates,
+    detectionSpeed: DetectionSpeed.normal,
   );
   bool busy = false;
   String status = 'Наведи камеру на код настройки на Mac';
@@ -28,42 +28,53 @@ class _SetupScannerState extends State<SetupScannerPage> {
 
   Future<void> detected(BarcodeCapture capture) async {
     if (busy) return;
-    final raw = capture.barcodes.firstOrNull?.rawValue;
-    if (raw == null) return;
-    Map<String, dynamic> setup;
-    try {
-      setup = parseSetupCode(raw);
-    } catch (_) {
+    Map<String, dynamic>? setup;
+    for (final barcode in capture.barcodes) {
+      final raw = barcode.rawValue;
+      if (raw == null) continue;
+      try {
+        setup = parseSetupCode(raw);
+        break;
+      } catch (_) {}
+    }
+    if (setup == null) {
+      setState(
+        () => status = 'Код не подходит. Открой «Перенести с Mac.command» и сканируй личный код Изbrainого.',
+      );
       return;
     }
     setState(() => busy = true);
-    await camera.stop();
+    try {
+      await camera.stop();
+    } catch (_) {}
     if (!mounted) return;
-    if (!await confirm(
+    final accepted = await confirm(
       context,
       'Перенести с Mac?',
       'Будут подключены твой архив и Gemini из этого кода. Сканируй только код, открытый на твоём Mac.',
-    )) {
-      if (mounted) {
-        setState(() => busy = false);
-        await camera.start();
+    );
+    if (!mounted) return;
+    if (accepted) {
+      final result = await Navigator.push<bool>(
+        context,
+        MaterialPageRoute<bool>(
+          builder: (_) => SetupImportPage(brain: widget.brain, setup: setup!),
+        ),
+      );
+      if (!mounted) return;
+      if (result == true) {
+        Navigator.pop(context, true);
+        return;
       }
-      return;
     }
+    setState(() => busy = false);
     try {
-      setState(() => status = 'Переношу архив и настройки…');
-      await widget.brain.applySetup(setup);
+      await camera.start();
+    } catch (_) {
       if (mounted) {
-        notice(context, 'Архив и настройки перенесены.');
-        Navigator.pop(context);
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          status = BrainController.friendly(e);
-          busy = false;
-        });
-        await camera.start();
+        setState(
+          () => status = 'Камера недоступна. Можно открыть изображение кода кнопкой сверху.',
+        );
       }
     }
   }
@@ -109,7 +120,20 @@ class _SetupScannerState extends State<SetupScannerPage> {
               borderRadius: BorderRadius.circular(24),
               child: Padding(
                 padding: const EdgeInsets.all(20),
-                child: MobileScanner(controller: camera, onDetect: detected),
+                child: MobileScanner(
+                  controller: camera,
+                  onDetect: detected,
+                  tapToFocus: true,
+                  errorBuilder: (_, _) => const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(24),
+                      child: Text(
+                        'Не удалось открыть камеру. Разреши доступ к камере в настройках телефона или открой изображение кода кнопкой сверху.',
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                  ),
+                ),
               ),
             ),
           ),
@@ -123,6 +147,137 @@ class _SetupScannerState extends State<SetupScannerPage> {
             ),
           ),
         ],
+      ),
+    ),
+  );
+}
+
+/// Keep transfer feedback separate from the stopped camera preview.
+class SetupImportPage extends StatefulWidget {
+  final BrainController brain;
+  final Map<String, dynamic> setup;
+  const SetupImportPage({super.key, required this.brain, required this.setup});
+  @override
+  State<SetupImportPage> createState() => _SetupImportState();
+}
+
+class _SetupImportState extends State<SetupImportPage> {
+  bool running = false, complete = false;
+  String phase = 'Подключаюсь к Mac…';
+  double? progress;
+  @override
+  void initState() {
+    super.initState();
+    _transfer();
+  }
+
+  Future<void> _transfer() async {
+    setState(() {
+      running = true;
+      progress = null;
+      phase = 'Подключаюсь к Mac…';
+    });
+    try {
+      await widget.brain.applySetup(
+        widget.setup,
+        onProgress: (text, value) {
+          if (mounted) {
+            setState(() {
+              phase = text;
+              progress = value;
+            });
+          }
+        },
+      );
+      if (mounted) {
+        setState(() {
+          running = false;
+          complete = true;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          running = false;
+          phase = BrainController.friendly(e);
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => PopScope(
+    canPop: !running,
+    child: Scaffold(
+      appBar: AppBar(
+        title: const Text('Перенос с Mac'),
+        automaticallyImplyLeading: !running,
+      ),
+      body: Center(
+        child: SingleChildScrollView(
+          child: Padding(
+            padding: const EdgeInsets.all(28),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  complete
+                      ? Icons.check_circle_outline
+                      : running
+                      ? Icons.sync
+                      : Icons.wifi_off,
+                  size: 64,
+                  color: accent,
+                ),
+                const SizedBox(height: 24),
+                Text(
+                  complete
+                      ? 'Архив перенесён'
+                      : running
+                      ? 'Переношу твои данные'
+                      : 'Перенос не завершён',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontSize: 26,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Text(
+                  complete
+                      ? 'Материалов: ${widget.brain.materials.length}.\nGemini ${widget.brain.ai.enabled ? "подключён" : "не подключён: в коде нет API-ключа"}.\nГлавный пароль хранилища прежний.'
+                      : phase,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(height: 1.6),
+                ),
+                const SizedBox(height: 24),
+                if (running) ...[
+                  LinearProgressIndicator(value: progress),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'Оставь приложение открытым до завершения.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: muted),
+                  ),
+                ] else if (complete)
+                  FilledButton(
+                    onPressed: () => Navigator.pop(context, true),
+                    child: const Text('Готово'),
+                  )
+                else ...[
+                  FilledButton(
+                    onPressed: _transfer,
+                    child: const Text('Повторить перенос'),
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.pop(context, false),
+                    child: const Text('Сканировать новый код'),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
       ),
     ),
   );

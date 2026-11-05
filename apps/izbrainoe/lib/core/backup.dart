@@ -65,7 +65,11 @@ class ArchiveBackup {
     return out;
   }
 
-  static Future<void> import(File file, ArchiveStore store) async {
+  static Future<void> import(
+    File file,
+    ArchiveStore store, {
+    void Function(int completed, int total)? onProgress,
+  }) async {
     if (await file.length() > 4 * 1024 * 1024 * 1024) {
       throw const FormatException('Слишком большая резервная копия.');
     }
@@ -120,12 +124,15 @@ class ArchiveBackup {
         }
       }
       // Authenticate everything before touching the destination archive.
+      var verified = 0;
+      onProgress?.call(0, blobs.length * 2 + 1);
       for (final blob in blobs.values) {
         if (!await restored.hasBlob(blob, verify: true)) {
           throw const FormatException(
             'В резервной копии отсутствует или повреждён оригинал.',
           );
         }
+        onProgress?.call(++verified, blobs.length * 2 + 1);
       }
       for (final blob in blobs.values) {
         if (!await store.hasBlob(blob, verify: true)) {
@@ -134,12 +141,14 @@ class ArchiveBackup {
             (i) => restored.encryptedChunk(blob['hash'] as String, i),
           );
         }
+        onProgress?.call(++verified, blobs.length * 2 + 1);
       }
       final events = <String, List<int>>{};
       for (final r in restored.revisions) {
         events[r.id] = await restored.eventBytes(r.id);
       }
       await store.merge(events);
+      onProgress?.call(blobs.length * 2 + 1, blobs.length * 2 + 1);
     } finally {
       input.close();
       if (await staging.exists()) await staging.delete(recursive: true);

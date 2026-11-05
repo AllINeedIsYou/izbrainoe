@@ -204,30 +204,58 @@ class BrainController extends ChangeNotifier {
     kickSync();
   }
 
-  Future<void> applySetup(Map<String, dynamic> setup) async {
+  Future<void> applySetup(
+    Map<String, dynamic> setup, {
+    void Function(String phase, double? progress)? onProgress,
+  }) async {
     final code = setup['archive_code'] as String;
     final incoming = await ArchiveCipher.fromCode(code);
-    if (incoming.archiveId != archive.cipher.archiveId) {
-      await connectArchive(code);
+    final changing = incoming.archiveId != archive.cipher.archiveId;
+    if (changing && archive.revisions.isNotEmpty) {
+      throw const FormatException(
+        'На телефоне уже есть другой архив. Перенос не заменит его. Сначала сохрани резервную копию текущего архива.',
+      );
     }
-    final file = await downloadSetupArchive(setup, temporary);
-    if (file != null) {
-      try {
-        await restoreBackup(file);
-      } finally {
-        if (await file.exists()) await file.delete();
-      }
+    if (syncing || _workers > 0 || importing > 0) {
+      throw const FormatException(
+        'Дождись завершения текущих действий и повтори перенос.',
+      );
     }
-    await saveSettings(
-      key: setup['provod_key'] as String,
-      token:
-          setup['disk_token'] as String? ??
-          await secrets.read('disk_token') ??
-          '',
-      name: deviceName,
-      model: setup['model'] as String? ?? 'gemini-3.8-flash',
-      limit: (setup['limit_rub'] as num? ?? 1000).toDouble(),
+    onProgress?.call('Подключаюсь к Mac…', null);
+    final file = await downloadSetupArchive(
+      setup,
+      temporary,
+      onProgress: (received, total) => onProgress?.call(
+        'Получаю архив с Mac: ${(received / 1048576).toStringAsFixed(1)} МБ'
+        '${total > 0 ? " из ${(total / 1048576).toStringAsFixed(1)} МБ" : ""}',
+        total > 0 ? received / total : null,
+      ),
     );
+    try {
+      if (changing) await connectArchive(code);
+      if (file != null) {
+        onProgress?.call('Проверяю и сохраняю файлы…', null);
+        await ArchiveBackup.import(
+          file,
+          archive,
+          onProgress: (done, total) =>
+              onProgress?.call('Проверяю и сохраняю файлы…', done / total),
+        );
+      }
+      onProgress?.call('Подключаю Gemini…', null);
+      await saveSettings(
+        key: setup['provod_key'] as String,
+        token:
+            setup['disk_token'] as String? ??
+            await secrets.read('disk_token') ??
+            '',
+        name: deviceName,
+        model: setup['model'] as String? ?? 'gemini-3.8-flash',
+        limit: (setup['limit_rub'] as num? ?? 1000).toDouble(),
+      );
+    } finally {
+      if (file != null && await file.exists()) await file.delete();
+    }
   }
 
   void kickSync() {

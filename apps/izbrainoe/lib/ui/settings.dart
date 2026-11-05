@@ -187,12 +187,21 @@ class _SettingsState extends State<SettingsPage> {
           padding: const EdgeInsets.fromLTRB(20, 8, 20, 35),
           children: [
             FilledButton.icon(
-              onPressed: () => Navigator.push(
-                context,
-                MaterialPageRoute<void>(
-                  builder: (_) => SetupScannerPage(brain: brain),
-                ),
-              ),
+              onPressed: () async {
+                final transferred = await Navigator.push<bool>(
+                  context,
+                  MaterialPageRoute<bool>(
+                    builder: (_) => SetupScannerPage(brain: brain),
+                  ),
+                );
+                if (!mounted || transferred != true) return;
+                key.text = brain.ai.apiKey;
+                model.text = brain.ai.model;
+                limit.text = brain.ai.monthlyLimit.toStringAsFixed(0);
+                name.text = brain.deviceName;
+                token.text = await brain.secrets.read('disk_token') ?? '';
+                if (mounted) setState(() {});
+              },
               icon: const Icon(Icons.qr_code_scanner),
               label: const Text('Перенести с Mac'),
             ),
