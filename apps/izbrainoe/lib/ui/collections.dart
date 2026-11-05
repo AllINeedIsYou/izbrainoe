@@ -269,16 +269,20 @@ class _FoldersViewState extends State<FoldersView> {
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text(
-              '${query.isNotEmpty
-                  ? 'НАЙДЕНО'
-                  : pins.isEmpty
-                  ? 'ВСЕ ПАПКИ'
-                  : 'ОСТАЛЬНЫЕ'} · ${rest.length}',
-              style: const TextStyle(
-                fontSize: 11,
-                color: muted,
-                letterSpacing: 1,
+            Expanded(
+              child: Text(
+                '${query.isNotEmpty
+                    ? 'НАЙДЕНО'
+                    : pins.isEmpty
+                    ? 'ВСЕ ПАПКИ'
+                    : 'ОСТАЛЬНЫЕ'} · ${rest.length}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 11,
+                  color: muted,
+                  letterSpacing: 1,
+                ),
               ),
             ),
             DropdownButton<bool>(

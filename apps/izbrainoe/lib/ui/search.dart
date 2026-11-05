@@ -9,7 +9,13 @@ import 'widgets.dart';
 class SearchPage extends StatefulWidget {
   final BrainController brain;
   final String initialQuery;
-  const SearchPage({super.key, required this.brain, this.initialQuery = ''});
+  final bool embedded;
+  const SearchPage({
+    super.key,
+    required this.brain,
+    this.initialQuery = '',
+    this.embedded = false,
+  });
   @override
   State<SearchPage> createState() => _SearchState();
 }
@@ -120,33 +126,36 @@ class _SearchState extends State<SearchPage> {
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('Найти в архиве')),
-    body: SafeArea(
-      child: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(18, 12, 18, 18),
-            child: TextField(
-              controller: query,
-              autofocus: widget.initialQuery.isEmpty,
-              textInputAction: TextInputAction.search,
-              onSubmitted: (_) => _search(),
-              decoration: InputDecoration(
-                hintText: 'Что найти?',
-                prefixIcon: const Icon(Icons.search, color: accent),
-                suffixIcon: IconButton(
-                  tooltip: 'Найти',
-                  onPressed: busy ? null : _search,
-                  icon: const Icon(Icons.arrow_forward),
-                ),
+  Widget build(BuildContext context) {
+    final content = Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(18, 12, 18, 18),
+          child: TextField(
+            controller: query,
+            autofocus: widget.initialQuery.isEmpty,
+            textInputAction: TextInputAction.search,
+            onSubmitted: (_) => _search(),
+            decoration: InputDecoration(
+              hintText: 'Что найти?',
+              prefixIcon: const Icon(Icons.search, color: accent),
+              suffixIcon: IconButton(
+                tooltip: 'Найти',
+                onPressed: busy ? null : _search,
+                icon: const Icon(Icons.arrow_forward),
               ),
             ),
           ),
-          if (busy) const LinearProgressIndicator(minHeight: 2),
-          Expanded(child: _content()),
-        ],
-      ),
-    ),
-  );
+        ),
+        if (busy) const LinearProgressIndicator(minHeight: 2),
+        Expanded(child: _content()),
+      ],
+    );
+    return widget.embedded
+        ? content
+        : Scaffold(
+            appBar: AppBar(title: const Text('Найти в архиве')),
+            body: SafeArea(child: content),
+          );
+  }
 }

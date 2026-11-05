@@ -15,6 +15,7 @@ import 'widgets.dart';
 import 'collections.dart';
 import 'attachments.dart';
 import 'chat_bubble.dart';
+import 'brand_navigation.dart';
 
 class HomeScreen extends StatefulWidget {
   final BrainController brain;
@@ -188,37 +189,11 @@ class _HomeState extends State<HomeScreen> with WidgetsBindingObserver {
     animation: brain,
     builder: (context, _) => Scaffold(
       appBar: AppBar(
-        title: Row(
-          children: [
-            ClipRRect(
-              borderRadius: BorderRadius.circular(11),
-              child: Image.asset(
-                'assets/logo.png',
-                width: 34,
-                height: 34,
-                filterQuality: FilterQuality.high,
-              ),
-            ),
-            const SizedBox(width: 11),
-            const Flexible(
-              child: Text(
-                'Изbrainое',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontWeight: FontWeight.w500, fontSize: 21),
-              ),
-            ),
-          ],
+        title: BrandNavigation(
+          selected: tab,
+          onSelected: (value) => setState(() => tab = value),
         ),
         actions: [
-          IconButton(
-            tooltip: 'Найти',
-            icon: const Icon(Icons.search),
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute<void>(builder: (_) => SearchPage(brain: brain)),
-            ),
-          ),
           IconButton(
             tooltip: 'Настройки',
             icon: const Icon(Icons.more_vert),
@@ -248,6 +223,8 @@ class _HomeState extends State<HomeScreen> with WidgetsBindingObserver {
             Expanded(
               child: tab == 0
                   ? _chat()
+                  : tab == 1
+                  ? SearchPage(brain: brain, embedded: true)
                   : tab == 2
                   ? FoldersView(brain: brain)
                   : VaultPage(brain: brain),
@@ -255,37 +232,6 @@ class _HomeState extends State<HomeScreen> with WidgetsBindingObserver {
             if (tab == 0) _composer(),
           ],
         ),
-      ),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: tab,
-        onDestinationSelected: (value) {
-          if (value == 1) {
-            Navigator.push(
-              context,
-              MaterialPageRoute<void>(builder: (_) => SearchPage(brain: brain)),
-            );
-          } else {
-            setState(() => tab = value);
-          }
-        },
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.chat_bubble_outline),
-            selectedIcon: Icon(Icons.chat_bubble),
-            label: 'Чат',
-          ),
-          NavigationDestination(icon: Icon(Icons.search), label: 'Поиск'),
-          NavigationDestination(
-            icon: Icon(Icons.folder_outlined),
-            selectedIcon: Icon(Icons.folder),
-            label: 'Подборки',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.lock_outline),
-            selectedIcon: Icon(Icons.lock),
-            label: 'Пароли',
-          ),
-        ],
       ),
     ),
   );
