@@ -19,7 +19,7 @@ class _SetupScannerState extends State<SetupScannerPage> {
     detectionSpeed: DetectionSpeed.normal,
   );
   bool busy = false;
-  String status = 'Наведи камеру на код настройки на Mac';
+  String status = 'Наведи камеру на личный код настройки Gemini';
   @override
   void dispose() {
     camera.dispose();
@@ -39,7 +39,7 @@ class _SetupScannerState extends State<SetupScannerPage> {
     }
     if (setup == null) {
       setState(
-        () => status = 'Код не подходит. Открой «Перенести с Mac.command» и сканируй личный код Изbrainого.',
+        () => status = 'Код не подходит. Открой «Подключить Gemini.command» и сканируй личный код Изbrainого.',
       );
       return;
     }
@@ -50,8 +50,12 @@ class _SetupScannerState extends State<SetupScannerPage> {
     if (!mounted) return;
     final accepted = await confirm(
       context,
-      'Перенести с Mac?',
-      'Будут подключены твой архив и Gemini из этого кода. Сканируй только код, открытый на твоём Mac.',
+      setup['mode'] == 'settings_only'
+          ? 'Подключить Gemini?'
+          : 'Перенести с Mac?',
+      setup['mode'] == 'settings_only'
+          ? 'Будут сохранены только ключ Gemini, модель и лимит расходов. Файлы, заметки, папки и пароли из кода не загружаются.'
+          : 'Будут подключены твой архив и Gemini из этого кода. Сканируй только свой код.',
     );
     if (!mounted) return;
     if (accepted) {
@@ -103,7 +107,7 @@ class _SetupScannerState extends State<SetupScannerPage> {
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
-      title: const Text('Перенести с Mac'),
+      title: const Text('Настройка по QR'),
       actions: [
         IconButton(
           tooltip: 'Открыть код из изображения',
@@ -163,7 +167,7 @@ class SetupImportPage extends StatefulWidget {
 
 class _SetupImportState extends State<SetupImportPage> {
   bool running = false, complete = false;
-  String phase = 'Подключаюсь к Mac…';
+  String phase = '';
   double? progress;
   @override
   void initState() {
@@ -175,7 +179,9 @@ class _SetupImportState extends State<SetupImportPage> {
     setState(() {
       running = true;
       progress = null;
-      phase = 'Подключаюсь к Mac…';
+      phase = widget.setup['mode'] == 'settings_only'
+          ? 'Сохраняю настройки Gemini…'
+          : 'Подключаюсь к Mac…';
     });
     try {
       await widget.brain.applySetup(
@@ -210,7 +216,11 @@ class _SetupImportState extends State<SetupImportPage> {
     canPop: !running,
     child: Scaffold(
       appBar: AppBar(
-        title: const Text('Перенос с Mac'),
+        title: Text(
+          widget.setup['mode'] == 'settings_only'
+              ? 'Подключение Gemini'
+              : 'Перенос с Mac',
+        ),
         automaticallyImplyLeading: !running,
       ),
       body: Center(
@@ -232,9 +242,15 @@ class _SetupImportState extends State<SetupImportPage> {
                 const SizedBox(height: 24),
                 Text(
                   complete
-                      ? 'Архив перенесён'
+                      ? widget.setup['mode'] == 'settings_only'
+                            ? 'Настройки сохранены'
+                            : 'Архив перенесён'
                       : running
-                      ? 'Переношу твои данные'
+                      ? widget.setup['mode'] == 'settings_only'
+                            ? 'Подключаю Gemini'
+                            : 'Переношу твои данные'
+                      : widget.setup['mode'] == 'settings_only'
+                      ? 'Настройка не завершена'
                       : 'Перенос не завершён',
                   textAlign: TextAlign.center,
                   style: const TextStyle(
@@ -245,7 +261,9 @@ class _SetupImportState extends State<SetupImportPage> {
                 const SizedBox(height: 20),
                 Text(
                   complete
-                      ? 'Материалов: ${widget.brain.materials.length}.\nGemini ${widget.brain.ai.enabled ? "подключён" : "не подключён: в коде нет API-ключа"}.\nГлавный пароль хранилища прежний.'
+                      ? widget.setup['mode'] == 'settings_only'
+                            ? 'Gemini ${widget.brain.ai.enabled ? "подключён" : "не подключён: в коде нет API-ключа"}.\nСохранены только настройки. Старые материалы не загружались.'
+                            : 'Материалов: ${widget.brain.materials.length}.\nGemini ${widget.brain.ai.enabled ? "подключён" : "не подключён: в коде нет API-ключа"}.\nГлавный пароль хранилища прежний.'
                       : phase,
                   textAlign: TextAlign.center,
                   style: const TextStyle(height: 1.6),
@@ -267,7 +285,11 @@ class _SetupImportState extends State<SetupImportPage> {
                 else ...[
                   FilledButton(
                     onPressed: _transfer,
-                    child: const Text('Повторить перенос'),
+                    child: Text(
+                      widget.setup['mode'] == 'settings_only'
+                          ? 'Повторить настройку'
+                          : 'Повторить перенос',
+                    ),
                   ),
                   TextButton(
                     onPressed: () => Navigator.pop(context, false),

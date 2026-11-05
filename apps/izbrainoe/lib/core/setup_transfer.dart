@@ -19,6 +19,24 @@ Map<String, dynamic> parseSetupCode(String raw) {
       ),
     ) as Map,
   );
+  if (value['v'] == 1 &&
+      value['mode'] == 'settings_only' &&
+      value['provod_key'] is String) {
+    final limit = value['limit_rub'];
+    if (limit != null && (limit is! num || !limit.isFinite || limit < 0)) {
+      throw const FormatException('Неверный лимит в коде настройки.');
+    }
+    if (value['model'] != null && value['model'] is! String) {
+      throw const FormatException('Неверная модель в коде настройки.');
+    }
+    return {
+      'v': 1,
+      'mode': 'settings_only',
+      'provod_key': value['provod_key'],
+      'model': value['model'] ?? 'gemini-3.8-flash',
+      'limit_rub': limit ?? 1000,
+    };
+  }
   if (value['v'] != 1 ||
       value['archive_code'] is! String ||
       value['provod_key'] is! String) {

@@ -227,7 +227,7 @@ class _SettingsState extends State<SettingsPage> {
                 if (mounted) setState(() {});
               },
               icon: const Icon(Icons.qr_code_scanner),
-              label: const Text('Перенести с Mac'),
+              label: const Text('Настроить по QR'),
             ),
             const SizedBox(height: 18),
             SurfaceBox(

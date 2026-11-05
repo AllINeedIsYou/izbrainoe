@@ -1,10 +1,12 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:izbrainoe/core/controller.dart';
 import 'package:izbrainoe/core/crypto_box.dart';
+import 'package:izbrainoe/core/setup_transfer.dart';
 import 'package:izbrainoe/ui/setup_scanner.dart';
 import 'package:izbrainoe/ui/widgets.dart';
 
@@ -35,6 +37,47 @@ class ControlledTransfer extends BrainController {
 }
 
 void main() {
+  test('settings QR imports only configuration and preserves current archive', () async {
+    final raw =
+        'izbrainoe-setup:${base64Url.encode(utf8.encode(jsonEncode({'v': 1, 'mode': 'settings_only', 'provod_key': 'synthetic-key', 'model': 'test-model', 'limit_rub': 750, 'archive_code': 'must-not-import', 'bundle_url': 'https://invalid.test', 'disk_token': 'must-not-import'})))}';
+    final setup = parseSetupCode(raw);
+    expect(setup.keys.toSet(), {
+      'v',
+      'mode',
+      'provod_key',
+      'model',
+      'limit_rub',
+    });
+    final temp = await Directory.systemTemp.createTemp('izb-settings-only-');
+    final secrets = MemorySecrets();
+    final brain = BrainController(
+      Directory('${temp.path}/root'),
+      Directory('${temp.path}/tmp'),
+      secrets,
+    );
+    try {
+      await brain.initialize();
+      final before = brain.archiveCode;
+      final note = await brain.archive.save({
+        'kind': 'note',
+        'body': 'keep me',
+        'folder': 'Existing',
+        'analysis_state': 'done',
+      });
+      await brain.applySetup(setup);
+      expect(brain.archiveCode, before);
+      expect(brain.archive.get(note.id)!.data['body'], 'keep me');
+      expect(brain.materials.length, 1);
+      expect(await secrets.read('provod_key'), 'synthetic-key');
+      expect(await secrets.read('disk_token'), '');
+      expect(brain.settings['model'], 'test-model');
+      expect(brain.settings['limit_rub'], 750);
+    } finally {
+      brain.dispose();
+      await temp.delete(recursive: true);
+    }
+  });
+
   testWidgets(
     'transfer shows progress, error, retry and explicit connected result',
     (tester) async {

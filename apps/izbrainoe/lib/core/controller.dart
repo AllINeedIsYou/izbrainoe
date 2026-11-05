@@ -284,6 +284,17 @@ class BrainController extends ChangeNotifier {
     Map<String, dynamic> setup, {
     void Function(String phase, double? progress)? onProgress,
   }) async {
+    if (setup['mode'] == 'settings_only') {
+      onProgress?.call('Сохраняю настройки Gemini…', null);
+      await saveSettings(
+        key: setup['provod_key'] as String,
+        token: await secrets.read('disk_token') ?? '',
+        name: deviceName,
+        model: setup['model'] as String? ?? 'gemini-3.8-flash',
+        limit: (setup['limit_rub'] as num? ?? 1000).toDouble(),
+      );
+      return;
+    }
     final code = setup['archive_code'] as String;
     final incoming = await ArchiveCipher.fromCode(code);
     final changing = incoming.archiveId != archive.cipher.archiveId;
