@@ -8,22 +8,27 @@ import 'package:flutter/services.dart';
 
 import '../core/archive_store.dart';
 import '../core/controller.dart';
+import 'material_preview.dart';
 
-const background = Color(0xff10151e),
-    surface = Color(0xff1a2230),
-    accent = Color(0xffc0f58c),
-    muted = Color(0xff9caaa5),
-    line = Color(0xff303d47);
+const background = Color(0xff101010),
+    surface = Color(0xff242424),
+    accent = Color(0xfff2f2f2),
+    muted = Color(0xffbcbcbc),
+    line = Color(0xff454545);
 ThemeData brainTheme() => ThemeData(
   brightness: Brightness.dark,
   useMaterial3: true,
   scaffoldBackgroundColor: background,
   colorScheme: const ColorScheme.dark(
+    surfaceContainerHigh: Color(0xff303030),
     primary: accent,
-    onPrimary: Color(0xff203017),
+    onPrimary: Color(0xff111111),
     surface: background,
-    onSurface: Color(0xfff0f3ed),
+    onSurface: Color(0xfff4f4f4),
     secondary: accent,
+    secondaryContainer: accent,
+    onSecondaryContainer: background,
+    onSurfaceVariant: muted,
     error: Color(0xffffb4ab),
   ),
   appBarTheme: const AppBarTheme(
@@ -33,7 +38,7 @@ ThemeData brainTheme() => ThemeData(
   ),
   snackBarTheme: SnackBarThemeData(
     backgroundColor: surface,
-    contentTextStyle: const TextStyle(color: Color(0xfff0f3ed)),
+    contentTextStyle: const TextStyle(color: Color(0xfff4f4f4)),
     behavior: SnackBarBehavior.floating,
     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
   ),
@@ -57,12 +62,12 @@ ThemeData brainTheme() => ThemeData(
   ),
   navigationBarTheme: NavigationBarThemeData(
     backgroundColor: background,
-    indicatorColor: const Color(0xff263626),
+    indicatorColor: accent,
     height: 74,
     labelTextStyle: WidgetStateProperty.resolveWith(
       (s) => TextStyle(
         fontSize: 11,
-        color: s.contains(WidgetState.selected) ? accent : muted,
+        color: s.contains(WidgetState.selected) ? background : muted,
       ),
     ),
   ),
@@ -117,6 +122,29 @@ Future<bool> confirm(BuildContext context, String title, String text) =>
         ],
       ),
     ).then((v) => v ?? false);
+Future<bool> confirmDelete(
+  BuildContext context,
+  String title,
+  String message,
+) async =>
+    await showBrainDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(c, false),
+            child: const Text('Нет'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(c, true),
+            child: const Text('Да, удалить'),
+          ),
+        ],
+      ),
+    ) ??
+    false;
 IconData fileIcon(String kind) => switch (kind) {
   'photo' => Icons.image_outlined,
   'audio' => Icons.music_note_outlined,
@@ -228,11 +256,13 @@ class EmptyState extends StatelessWidget {
 
 class MaterialTile extends StatelessWidget {
   final ArchiveRecord record;
+  final BrainController? brain;
   final VoidCallback onTap;
   final Widget? trailing;
   const MaterialTile({
     super.key,
     required this.record,
+    this.brain,
     required this.onTap,
     this.trailing,
   });
@@ -245,13 +275,15 @@ class MaterialTile extends StatelessWidget {
       child: ListTile(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
-        leading: Container(
-          padding: const EdgeInsets.all(11),
-          decoration: BoxDecoration(
-            color: const Color(0xff263626),
-            borderRadius: BorderRadius.circular(12),
+        leading: SizedBox(
+          width: 54,
+          height: 54,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(7),
+            child: brain != null
+                ? RecordPreview(brain: brain!, record: record)
+                : Icon(fileIcon(record.kind)),
           ),
-          child: Icon(fileIcon(record.kind), color: accent),
         ),
         title: Text(record.title, maxLines: 2, overflow: TextOverflow.ellipsis),
         subtitle: Text(

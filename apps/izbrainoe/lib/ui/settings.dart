@@ -49,6 +49,30 @@ class _SettingsState extends State<SettingsPage> {
     super.dispose();
   }
 
+  Future<void> _clearEverything() async {
+    final yes = await confirmDelete(
+      context,
+      'Очистить абсолютно всё?',
+      'Будут безвозвратно удалены файлы, заметки, пароли, папки, корзина, настройки и API-ключи НА ЭТОМ УСТРОЙСТВЕ. Архив на Mac и копии на других устройствах останутся.',
+    );
+    if (!yes || !mounted) return;
+    setState(() => saving = true);
+    final ok = await safely(context, () async {
+      await widget.brain.clearAll();
+      return true;
+    });
+    if (!mounted) return;
+    setState(() => saving = false);
+    if (ok == true) {
+      key.clear();
+      token.clear();
+      name.text = widget.brain.deviceName;
+      model.text = widget.brain.ai.model;
+      limit.text = widget.brain.ai.monthlyLimit.toStringAsFixed(0);
+      notice(context, 'Все данные и настройки этого устройства удалены.');
+    }
+  }
+
   Future<void> _save() async {
     final amount = double.tryParse(limit.text.replaceAll(',', '.'));
     if (amount == null || amount < 0) {
@@ -441,9 +465,15 @@ class _SettingsState extends State<SettingsPage> {
                 ],
               ),
             ),
+            const SizedBox(height: 18),
+            OutlinedButton.icon(
+              onPressed: saving || brain.clearing ? null : _clearEverything,
+              icon: const Icon(Icons.delete_forever_outlined),
+              label: const Text('Очистить абсолютно всё'),
+            ),
             const SizedBox(height: 22),
             const Text(
-              'Изbrainое · Android 0.1\nАрхив хранится на устройстве. Обработка очереди и синхронизация продолжаются при открытии приложения. Для анализа нужен интернет.',
+              'Изbrainое · Android 0.2\nАрхив хранится на устройстве. Обработка очереди и синхронизация продолжаются при открытии приложения. Для анализа нужен интернет.',
               textAlign: TextAlign.center,
               style: TextStyle(color: muted, fontSize: 11, height: 1.6),
             ),
@@ -474,6 +504,7 @@ class TrashPage extends StatelessWidget {
                   .map(
                     (r) => MaterialTile(
                       record: r,
+                      brain: brain,
                       trailing: IconButton(
                         tooltip: 'Восстановить',
                         onPressed: () => safely(

@@ -106,6 +106,7 @@ class _SearchState extends State<SearchPage> {
         ...results!.map(
           (r) => MaterialTile(
             record: r,
+            brain: widget.brain,
             onTap: () => Navigator.push(
               context,
               MaterialPageRoute<void>(

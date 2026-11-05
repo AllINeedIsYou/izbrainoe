@@ -1,8 +1,6 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
 
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:receive_sharing_intent/receive_sharing_intent.dart';
 
@@ -14,6 +12,9 @@ import 'search.dart';
 import 'settings.dart';
 import 'vault.dart';
 import 'widgets.dart';
+import 'collections.dart';
+import 'attachments.dart';
+import 'chat_bubble.dart';
 
 class HomeScreen extends StatefulWidget {
   final BrainController brain;
@@ -26,6 +27,15 @@ class HomeScreen extends StatefulWidget {
 class _HomeState extends State<HomeScreen> with WidgetsBindingObserver {
   int tab = 0;
   bool sending = false;
+  late String _seenArchiveCode;
+  void _archiveChanged() {
+    if (_seenArchiveCode != brain.archiveCode) {
+      _seenArchiveCode = brain.archiveCode;
+      composer.clear();
+      if (mounted) setState(() => tab = 0);
+    }
+  }
+
   final composer = TextEditingController();
   final scroll = ScrollController();
   StreamSubscription<List<SharedMediaFile>>? sharing;
@@ -34,6 +44,8 @@ class _HomeState extends State<HomeScreen> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _seenArchiveCode = brain.archiveCode;
+    brain.addListener(_archiveChanged);
     if (widget.shares != null) {
       widget.shares!.attach(_receive);
     } else if (Platform.isAndroid) {
@@ -101,6 +113,7 @@ class _HomeState extends State<HomeScreen> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    brain.removeListener(_archiveChanged);
     widget.shares?.detach();
     sharing?.cancel();
     WidgetsBinding.instance.removeObserver(this);
@@ -110,30 +123,8 @@ class _HomeState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _pickFiles() async {
-    final picked = await safely(context, () => FilePicker.pickFiles());
-    if (picked == null) return;
-    var saved = 0;
-    for (final f in picked) {
-      try {
-        final source = await copyPickedFile(f, brain.temporary);
-        try {
-          await brain.addFile(source, name: f.name);
-        } finally {
-          if (source.parent.path == brain.temporary.path &&
-              source.path.split('/').last.startsWith('picked-') &&
-              await source.exists()) {
-            await source.delete();
-          }
-        }
-        saved++;
-      } catch (e) {
-        if (mounted) notice(context, BrainController.friendly(e));
-      }
-    }
-    if (mounted && saved > 0) {
-      setState(() => tab = 0);
-      notice(context, 'Сохранено: $saved');
-    }
+    final saved = await safely(context, () => addAttachments(context, brain));
+    if (mounted && (saved ?? 0) > 0) setState(() => tab = 0);
   }
 
   Future<void> _send() async {
@@ -201,7 +192,7 @@ class _HomeState extends State<HomeScreen> with WidgetsBindingObserver {
           children: [
             ClipRRect(
               borderRadius: BorderRadius.circular(11),
-              child: Image.asset('assets/logo.png', width: 34, height: 34),
+              child: const Icon(Icons.bookmark_outline, size: 32),
             ),
             const SizedBox(width: 11),
             const Flexible(
@@ -249,7 +240,7 @@ class _HomeState extends State<HomeScreen> with WidgetsBindingObserver {
               child: tab == 0
                   ? _chat()
                   : tab == 2
-                  ? _folders()
+                  ? FoldersView(brain: brain)
                   : VaultPage(brain: brain),
             ),
             if (tab == 0) _composer(),
@@ -329,175 +320,11 @@ class _HomeState extends State<HomeScreen> with WidgetsBindingObserver {
                   style: const TextStyle(color: muted, fontSize: 12),
                 ),
               ),
-            Align(
-              alignment: Alignment.centerRight,
-              child: ConstrainedBox(
-                constraints: BoxConstraints(
-                  maxWidth: MediaQuery.sizeOf(context).width > 600
-                      ? 480
-                      : MediaQuery.sizeOf(context).width * .88,
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.only(bottom: 10),
-                  child: Material(
-                    color: surface,
-                    borderRadius: const BorderRadius.only(
-                      topLeft: Radius.circular(20),
-                      topRight: Radius.circular(20),
-                      bottomLeft: Radius.circular(20),
-                      bottomRight: Radius.circular(5),
-                    ),
-                    child: InkWell(
-                      borderRadius: BorderRadius.circular(20),
-                      onTap: () => _detail(record),
-                      onLongPress: () =>
-                          showRecordActions(context, brain, record),
-                      child: Padding(
-                        padding: const EdgeInsets.all(14),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            if (record.kind == 'photo')
-                              FutureBuilder<Uint8List?>(
-                                future: brain.preview(record),
-                                builder: (context, snapshot) {
-                                  if (snapshot.data == null) {
-                                    return const SizedBox.shrink();
-                                  }
-                                  return Padding(
-                                    padding: const EdgeInsets.only(bottom: 12),
-                                    child: ClipRRect(
-                                      borderRadius: BorderRadius.circular(12),
-                                      child: ConstrainedBox(
-                                        constraints: const BoxConstraints(
-                                          maxHeight: 230,
-                                        ),
-                                        child: Image.memory(
-                                          snapshot.data!,
-                                          fit: BoxFit.contain,
-                                        ),
-                                      ),
-                                    ),
-                                  );
-                                },
-                              ),
-                            if (record.blob != null)
-                              Row(
-                                mainAxisSize: MainAxisSize.min,
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Container(
-                                    padding: const EdgeInsets.all(10),
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xff263626),
-                                      borderRadius: BorderRadius.circular(12),
-                                    ),
-                                    child: Icon(
-                                      fileIcon(record.kind),
-                                      color: accent,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  Flexible(
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          record.title,
-                                          style: const TextStyle(
-                                            fontWeight: FontWeight.w500,
-                                          ),
-                                        ),
-                                        const SizedBox(height: 5),
-                                        Text(
-                                          sizeLabel(
-                                            record.blob!['size'] as int,
-                                          ),
-                                          style: const TextStyle(
-                                            color: muted,
-                                            fontSize: 12,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ],
-                              )
-                            else
-                              Text(
-                                record.data['body'] as String? ?? record.title,
-                                maxLines: 8,
-                                overflow: TextOverflow.ellipsis,
-                                style: TextStyle(
-                                  fontSize: 15,
-                                  height: 1.45,
-                                  color: record.kind == 'link' ? accent : null,
-                                ),
-                              ),
-                            if ((record.data['context'] as String? ?? '')
-                                .isNotEmpty) ...[
-                              const SizedBox(height: 10),
-                              Text(
-                                record.data['context'] as String,
-                                style: const TextStyle(
-                                  fontSize: 13,
-                                  color: muted,
-                                ),
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ],
-                            const SizedBox(height: 9),
-                            Wrap(
-                              alignment: WrapAlignment.end,
-                              crossAxisAlignment: WrapCrossAlignment.center,
-                              spacing: 7,
-                              children: [
-                                if (record.conflict)
-                                  const Icon(
-                                    Icons.call_split,
-                                    color: accent,
-                                    size: 14,
-                                  ),
-                                Text(
-                                  record.folder,
-                                  style: const TextStyle(
-                                    color: muted,
-                                    fontSize: 11,
-                                  ),
-                                ),
-                                Text(
-                                  timeLabel(
-                                    record.data['created'] as int? ??
-                                        record.current.created,
-                                  ),
-                                  style: const TextStyle(
-                                    color: muted,
-                                    fontSize: 11,
-                                  ),
-                                ),
-                                Icon(
-                                  brain.materials.any(
-                                            (r) => r.id == record.id,
-                                          ) &&
-                                          record.data['analysis_state'] ==
-                                              'pending' &&
-                                          brain.ai.enabled
-                                      ? Icons.schedule
-                                      : Icons.check,
-                                  size: 13,
-                                  color: accent,
-                                ),
-                              ],
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
+            ChatBubble(
+              key: ValueKey(record.id),
+              brain: brain,
+              record: record,
+              onTap: () => _detail(record),
             ),
           ],
         );
@@ -544,152 +371,6 @@ class _HomeState extends State<HomeScreen> with WidgetsBindingObserver {
               : const Icon(Icons.arrow_upward),
         ),
       ],
-    ),
-  );
-  Widget _folders() => ListView(
-    padding: const EdgeInsets.all(20),
-    children: [
-      Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          const Text(
-            'Подборки',
-            style: TextStyle(fontSize: 26, fontWeight: FontWeight.w500),
-          ),
-          IconButton(
-            tooltip: 'Создать подборку',
-            onPressed: () => newFolderDialog(context, brain),
-            icon: const Icon(Icons.create_new_folder_outlined, color: accent),
-          ),
-        ],
-      ),
-      const SizedBox(height: 20),
-      if (brain.folders.isEmpty)
-        const Padding(
-          padding: EdgeInsets.only(top: 50),
-          child: Text(
-            'Подборки появятся после первых сохранений.',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: muted),
-          ),
-        ),
-      ...brain.folders.map(
-        (folder) => Padding(
-          padding: const EdgeInsets.only(bottom: 10),
-          child: SurfaceBox(
-            padding: EdgeInsets.zero,
-            child: ListTile(
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: 18,
-                vertical: 11,
-              ),
-              leading: const Icon(Icons.folder_outlined, color: accent),
-              title: Text(folder),
-              subtitle: Text(
-                'Материалов: ${brain.materials.where((r) => r.folder == folder).length}',
-                style: const TextStyle(color: muted, fontSize: 12),
-              ),
-              trailing: const Icon(Icons.chevron_right, color: muted),
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute<void>(
-                  builder: (_) => FolderPage(brain: brain, folder: folder),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
-    ],
-  );
-}
-
-Future<void> newFolderDialog(
-  BuildContext context,
-  BrainController brain,
-) async {
-  final name = TextEditingController(), extensions = TextEditingController();
-  await showBrainDialog<void>(
-    context: context,
-    builder: (c) => StatefulBuilder(
-      builder: (c, set) {
-        return AlertDialog(
-          title: const Text('Новая подборка'),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: name,
-                  autofocus: true,
-                  decoration: const InputDecoration(labelText: 'Название'),
-                ),
-                const SizedBox(height: 14),
-                TextField(
-                  controller: extensions,
-                  decoration: const InputDecoration(
-                    labelText: 'Расширения — необязательно',
-                    hintText: 'Например, mp3, flac',
-                  ),
-                ),
-                const SizedBox(height: 12),
-                const Text(
-                  'Без личного пояснения файлы этих форматов будут попадать сюда. Правило применяется и к сохранённым материалам.',
-                  style: TextStyle(fontSize: 12, color: muted),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(c),
-              child: const Text('Отмена'),
-            ),
-            FilledButton(
-              onPressed: () async {
-                final result = await safely(c, () async {
-                  await brain.createFolderRule(name.text, extensions.text);
-                  return true;
-                });
-                if (result == true && c.mounted) Navigator.pop(c);
-              },
-              child: const Text('Создать'),
-            ),
-          ],
-        );
-      },
-    ),
-  );
-  name.dispose();
-  extensions.dispose();
-}
-
-class FolderPage extends StatelessWidget {
-  final BrainController brain;
-  final String folder;
-  const FolderPage({super.key, required this.brain, required this.folder});
-  @override
-  Widget build(BuildContext context) => AnimatedBuilder(
-    animation: brain,
-    builder: (context, _) => Scaffold(
-      appBar: AppBar(title: Text(folder)),
-      body: ListView(
-        padding: const EdgeInsets.all(18),
-        children: brain.materials
-            .where((r) => r.folder == folder)
-            .map(
-              (r) => MaterialTile(
-                record: r,
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute<void>(
-                    builder: (_) => DetailPage(brain: brain, id: r.id),
-                  ),
-                ),
-              ),
-            )
-            .toList(),
-      ),
     ),
   );
 }

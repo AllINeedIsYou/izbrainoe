@@ -13,6 +13,7 @@ import 'crypto_box.dart';
 import 'intelligence.dart';
 import 'relay.dart';
 import 'setup_transfer.dart';
+import 'previews.dart';
 
 abstract class SecretStore {
   Future<String?> read(String name);
@@ -42,13 +43,18 @@ class BrainController extends ChangeNotifier {
   int importing = 0;
   final Map<String, Future<Uint8List?>> _previews = {};
   final Queue<String> _queue = Queue();
-  final Set<String> _scheduled = {};
+  final Set<String> _scheduled = {}, _active = {}, _again = {};
+  bool clearing = false, reviewingRule = false;
+  int _generation = 0;
+  String ruleReviewStatus = '';
   int _workers = 0;
   Timer? _syncTimer, _periodic, _vaultTimer;
   Map<String, dynamic>? _vault;
   String? _vaultPassword;
   RelaySync? _relay;
-  final Serial _imports = Serial(), _vaultWrites = Serial();
+  final Serial _imports = Serial(),
+      _vaultWrites = Serial(),
+      _previewJobs = Serial();
   BrainController(this.root, this.temporary, this.secrets);
   void changed() {
     if (!disposed) notifyListeners();
@@ -66,7 +72,7 @@ class BrainController extends ChangeNotifier {
       )
       .toList();
   List<ArchiveRecord> get trash => archive.records
-      .where((r) => r.kind != 'vault' && r.kind != 'rule' && r.deleted)
+      .where((r) => !['vault', 'rule', 'folder'].contains(r.kind) && r.deleted)
       .toList();
   List<String> get folders => (<String>{
     ...materials.map((r) => r.folder),
@@ -74,6 +80,69 @@ class BrainController extends ChangeNotifier {
         .where((r) => r.kind == 'folder' && !r.deleted)
         .map((r) => r.folder),
   }.toList()..sort((a, b) => a.compareTo(b)));
+  List<ArchiveRecord> get folderDefinitions =>
+      archive.records.where((r) => r.kind == 'folder' && !r.deleted).toList();
+  List<String> get pinnedFolders =>
+      (settings['pinned_folders'] as List? ?? folders.take(2).toList())
+          .whereType<String>()
+          .where(folders.contains)
+          .take(4)
+          .toList();
+  List<Map<String, dynamic>> get routingRules {
+    final rules =
+        folderDefinitions
+            .where((r) => (r.data['description'] as String? ?? '').isNotEmpty)
+            .toList()
+          ..sort(
+            (a, b) => (b.data['rule_priority'] as int? ?? b.current.created)
+                .compareTo(
+                  a.data['rule_priority'] as int? ?? a.current.created,
+                ),
+          );
+    return rules
+        .map(
+          (r) => {
+            'folder': r.folder,
+            'description': safeText(r.data['description'] as String),
+          },
+        )
+        .toList();
+  }
+
+  String get _ruleStamp => routingRules.toString();
+  Future<void> preferences(Map<String, dynamic> patch) async {
+    settings.addAll(patch);
+    await atomicWrite(
+      File(p.join(archive.directory.path, 'profile.enc')),
+      await archive.cipher.sealJson(settings, 'profile'),
+    );
+    changed();
+  }
+
+  Future<void> pinFolder(String folder) async {
+    final pins = pinnedFolders.toList();
+    if (pins.contains(folder)) {
+      pins.remove(folder);
+    } else {
+      if (pins.length >= 4) {
+        throw const FormatException(
+          'Можно закрепить до четырёх папок. Сначала открепи одну.',
+        );
+      }
+      pins.add(folder);
+    }
+    await preferences({'pinned_folders': pins});
+  }
+
+  bool folderGrid(String folder) =>
+      (settings['file_views'] as Map? ?? {})[folder] != 'list';
+  Future<void> setFolderGrid(String folder, bool grid) => preferences({
+    'file_views': {
+      ...settings['file_views'] as Map? ?? {},
+      folder: grid ? 'grid' : 'list',
+    },
+  });
+
   int get pending => _scheduled.length;
   bool get vaultOpen => _vault != null;
   ArchiveRecord? get vaultRecord =>
@@ -293,6 +362,7 @@ class BrainController extends ChangeNotifier {
   }
 
   Future<ArchiveRecord> addNote(String body, {String context = ''}) async {
+    if (clearing) throw const FormatException('Дождись очистки.');
     final text = body.trim();
     if (text.length > 200000) {
       throw const FormatException(
@@ -325,7 +395,9 @@ class BrainController extends ChangeNotifier {
     File source, {
     String? name,
     String context = '',
+    String? folder,
   }) => _imports.run(() async {
+    if (clearing) throw const FormatException('Дождись очистки.');
     importing++;
     changed();
     try {
@@ -339,7 +411,9 @@ class BrainController extends ChangeNotifier {
           )
           .firstOrNull;
       if (duplicate != null) {
-        if (context.isNotEmpty) await addContext(duplicate, context);
+        if (context.isNotEmpty || folder != null) {
+          await addContext(duplicate, context, folder: folder);
+        }
         return archive.get(duplicate.id)!;
       }
       final record = await archive.save({
@@ -348,7 +422,9 @@ class BrainController extends ChangeNotifier {
         'kind': kindFor(filename),
         'blob': blob,
         'context': context,
+        if (folder != null) 'manual_folder': true,
         'folder':
+            (folder == null ? null : canonicalFolder(folder)) ??
             _rule(filename, context) ??
             fallbackFolder(filename, context: context),
         'analysis_state': 'pending',
@@ -365,6 +441,23 @@ class BrainController extends ChangeNotifier {
   String? _rule(String filename, String context) {
     if (context.trim().isNotEmpty) return null;
     final ext = p.extension(filename).toLowerCase();
+    final definitions = folderDefinitions.toList()
+      ..sort(
+        (a, b) => (b.data['rule_priority'] as int? ?? b.current.created)
+            .compareTo(a.data['rule_priority'] as int? ?? a.current.created),
+      );
+    for (final rule in definitions) {
+      final extensions = (rule.data['extensions'] as List? ?? [])
+          .whereType<String>();
+      if (extensions.isNotEmpty) {
+        if (extensions.contains(ext)) return rule.folder;
+        continue;
+      }
+      // A newer semantic rule must be evaluated before any older format rule.
+      if ((rule.data['description'] as String? ?? '').trim().isNotEmpty) {
+        return null;
+      }
+    }
     return archive.records
         .where(
           (r) => r.kind == 'rule' && !r.deleted && r.data['extension'] == ext,
@@ -373,26 +466,102 @@ class BrainController extends ChangeNotifier {
         ?.folder;
   }
 
-  Future<void> createFolderRule(String folder, String extensions) async {
-    final clean = canonicalFolder(folder);
-    if (clean == 'Неразобранное') {
+  Future<void> createFolderRule(
+    String folder,
+    String description, {
+    bool reviewExisting = false,
+  }) async {
+    final clean = canonicalFolder(folder.trim());
+    if (folder.trim().isEmpty || clean == 'Неразобранное') {
       throw const FormatException('Укажи название подборки.');
     }
-    if (!folders.contains(clean)) {
-      await archive.save({'kind': 'folder', 'title': clean, 'folder': clean});
+    if (description.length > 3000) {
+      throw const FormatException('Сократи правило до 3000 символов.');
     }
-    for (var ext
-        in extensions
+    if (reviewingRule) {
+      throw const FormatException('Дождись текущего пересмотра папок.');
+    }
+    var ruleText = description.trim();
+    final extensionOnly =
+        RegExp(r'^\.?[a-zA-Z0-9]{1,12}(?:[,;\s]+\.?[a-zA-Z0-9]{1,12})*$')
+            .hasMatch(ruleText) &&
+        ruleText
             .toLowerCase()
             .split(RegExp(r'[,;\s]+'))
-            .where((s) => s.isNotEmpty)) {
-      if (!ext.startsWith('.')) ext = '.$ext';
-      if (!RegExp(r'^\.[a-z0-9]{1,12}$').hasMatch(ext)) {
-        throw const FormatException(
-          'Расширения указываются как mp3, zip, json.',
-        );
-      }
-      final existing = archive.records
+            .every(
+              (v) =>
+                  v.startsWith('.') ||
+                  {
+                    'mp3',
+                    'flac',
+                    'wav',
+                    'ogg',
+                    'opus',
+                    'mp4',
+                    'mov',
+                    'mkv',
+                    'zip',
+                    'rar',
+                    '7z',
+                    'pdf',
+                    'docx',
+                    'xlsx',
+                    'pptx',
+                    'jpg',
+                    'jpeg',
+                    'png',
+                    'json',
+                    'txt',
+                    'py',
+                    'js',
+                  }.contains(v),
+            );
+    final extensions = extensionOnly
+        ? ruleText
+              .toLowerCase()
+              .split(RegExp(r'[,;\s]+'))
+              .map((v) => v.startsWith('.') ? v : '.$v')
+              .toSet()
+              .toList()
+        : <String>[];
+    if (extensions.isNotEmpty) {
+      ruleText = 'Все файлы форматов ${extensions.join(", ")}';
+    }
+    final existing = folderDefinitions
+        .where((r) => r.folder == clean)
+        .firstOrNull;
+    final definition = await archive.save(
+      {
+        ...?existing?.data,
+        'kind': 'folder',
+        'title': clean,
+        'folder': clean,
+        'description': ruleText,
+        'extensions': extensions,
+        'rule_priority': DateTime.now().microsecondsSinceEpoch,
+        'deleted': false,
+      },
+      recordId: existing?.id,
+      expectedHeads: existing?.heads.map((r) => r.id).toList(),
+    );
+    for (final old
+        in archive.records
+            .where(
+              (r) =>
+                  r.kind == 'rule' &&
+                  !r.deleted &&
+                  r.folder == clean &&
+                  !extensions.contains(r.data['extension']),
+            )
+            .toList()) {
+      await archive.save(
+        {...old.data, 'deleted': true},
+        recordId: old.id,
+        expectedHeads: old.heads.map((r) => r.id).toList(),
+      );
+    }
+    for (final ext in extensions) {
+      final previous = archive.records
           .where((r) => r.kind == 'rule' && r.data['extension'] == ext)
           .firstOrNull;
       await archive.save({
@@ -400,39 +569,206 @@ class BrainController extends ChangeNotifier {
         'title': 'Правило $ext',
         'folder': clean,
         'extension': ext,
-      }, recordId: existing?.id);
-      for (final record in materials.where(
-        (r) =>
-            p.extension(r.data['filename'] as String? ?? '').toLowerCase() ==
-                ext &&
-            r.data['manual_folder'] != true &&
-            (r.data['context'] as String? ?? '').isEmpty,
-      )) {
-        await archive.save(
-          {...record.data, 'folder': clean},
-          recordId: record.id,
-          expectedHeads: record.heads.map((r) => r.id).toList(),
+        'deleted': false,
+      }, recordId: previous?.id);
+    }
+    changed();
+    kickSync();
+    if (!reviewExisting || ruleText.isEmpty) return;
+    reviewingRule = true;
+    ruleReviewStatus = 'Пересматриваю сохранённые материалы…';
+    changed();
+    try {
+      final candidates = materials
+          .where(
+            (r) =>
+                !r.credential &&
+                !r.conflict &&
+                r.data['sensitive'] != true &&
+                r.folder != clean,
+          )
+          .toList();
+      var moved = 0, checked = 0;
+      final semantic = <ArchiveRecord>[];
+      for (final r in candidates) {
+        final ext = p
+            .extension(r.data['filename'] as String? ?? '')
+            .toLowerCase();
+        if (extensions.isNotEmpty) {
+          if (extensions.contains(ext)) {
+            await _moveByRule(r, definition);
+            moved++;
+          }
+        } else if (r.kind != 'video' ||
+            (r.data['context'] as String? ?? '').trim().isNotEmpty) {
+          if ((r.data['summary'] as String? ?? '').isEmpty &&
+              (r.data['text'] as String? ?? '').isEmpty &&
+              (r.data['body'] as String? ?? '').isEmpty &&
+              r.kind == 'photo') {
+            schedule(r.id);
+          } else {
+            semantic.add(r);
+          }
+        }
+      }
+      if (semantic.isNotEmpty && !ai.enabled) {
+        throw const FormatException(
+          'Правило сохранено. Для пересмотра старых материалов подключи Gemini в настройках.',
         );
       }
+      for (var offset = 0; offset < semantic.length; offset += 20) {
+        final batch = semantic.skip(offset).take(20).toList();
+        final ids = await ai.matchFolderRule(ruleText, batch);
+        for (final id in ids) {
+          final old = batch.firstWhere((r) => r.id == id),
+              live = archive.get(id);
+          if (live != null &&
+              !live.deleted &&
+              live.heads.map((r) => r.id).join() ==
+                  old.heads.map((r) => r.id).join()) {
+            await _moveByRule(live, definition);
+            moved++;
+          }
+        }
+        checked += batch.length;
+        ruleReviewStatus =
+            'Проверено: $checked из ${semantic.length}. Перемещено: $moved';
+        changed();
+      }
+      ruleReviewStatus = 'Готово. Перемещено: $moved';
+    } finally {
+      reviewingRule = false;
+      changed();
+      kickSync();
     }
+  }
+
+  Future<void> _moveByRule(ArchiveRecord record, ArchiveRecord rule) => archive
+      .save(
+        {
+          ...record.data,
+          'folder': rule.folder,
+          'manual_folder': false,
+          'matched_rule': rule.id,
+        },
+        recordId: record.id,
+        expectedHeads: record.heads.map((r) => r.id).toList(),
+      )
+      .then((_) {});
+
+  Future<void> trashMany(Iterable<String> ids) async {
+    for (final id in ids.toSet()) {
+      final r = archive.get(id);
+      if (r != null && !r.deleted && !r.credential && r.kind != 'vault') {
+        await trashRecord(r);
+      }
+    }
+  }
+
+  Future<void> deleteFolder(String folder) async {
+    if (reviewingRule) {
+      throw const FormatException('Дождись пересмотра материалов.');
+    }
+    for (final r in materials.where((r) => r.folder == folder).toList()) {
+      await trashRecord(r);
+    }
+    for (final r
+        in archive.records
+            .where(
+              (r) =>
+                  ['folder', 'rule'].contains(r.kind) &&
+                  r.folder == folder &&
+                  !r.deleted,
+            )
+            .toList()) {
+      await archive.save(
+        {...r.data, 'deleted': true},
+        recordId: r.id,
+        expectedHeads: r.heads.map((r) => r.id).toList(),
+      );
+    }
+    await preferences({
+      'pinned_folders': pinnedFolders.where((v) => v != folder).toList(),
+    });
     kickSync();
     changed();
   }
 
+  Future<void> clearAll() async {
+    if (clearing || importing > 0 || syncing || reviewingRule) {
+      throw const FormatException(
+        'Дождись завершения текущих действий перед очисткой.',
+      );
+    }
+    clearing = true;
+    paused = true;
+    _generation++;
+    _queue.clear();
+    _again.clear();
+    _syncTimer?.cancel();
+    lockVault();
+    ai.client.close();
+    _relay?.remote.close();
+    _relay = null;
+    changed();
+    try {
+      while (_workers > 0) {
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+      }
+      _scheduled.clear();
+      _previews.clear();
+      for (final name in [
+        'provod_key',
+        'disk_token',
+        'archive_code',
+        'device_id',
+      ]) {
+        await secrets.write(name, '');
+      }
+      if (await root.exists()) await root.delete(recursive: true);
+      if (await temporary.exists()) await temporary.delete(recursive: true);
+      await root.create(recursive: true);
+      await temporary.create(recursive: true);
+      archiveCode = ArchiveCipher.createCode();
+      deviceId = newId();
+      await secrets.write('archive_code', archiveCode);
+      await secrets.write('device_id', deviceId);
+      await _openArchive();
+      error = null;
+      ruleReviewStatus = '';
+      syncStatus = 'Локальный архив';
+    } finally {
+      clearing = false;
+      paused = false;
+      changed();
+    }
+  }
+
   void schedule(String id) {
-    if (disposed || !_scheduled.add(id)) return;
+    if (disposed || clearing) return;
+    if (!_scheduled.add(id)) {
+      if (_active.contains(id)) _again.add(id);
+      return;
+    }
     _queue.add(id);
     _pump();
   }
 
   void _pump() {
-    while (!disposed && !paused && _workers < 2 && _queue.isNotEmpty) {
+    while (!disposed &&
+        !clearing &&
+        !paused &&
+        _workers < 2 &&
+        _queue.isNotEmpty) {
       final id = _queue.removeFirst();
       _workers++;
+      _active.add(id);
       unawaited(
         _analyze(id).whenComplete(() {
           _workers--;
           _scheduled.remove(id);
+          _active.remove(id);
+          if (_again.remove(id) && !clearing) schedule(id);
           changed();
           _pump();
         }),
@@ -443,6 +779,8 @@ class BrainController extends ChangeNotifier {
 
   Future<void> _analyze(String id) async {
     File? clear;
+    final generation = _generation;
+    final ruleStamp = _ruleStamp;
     try {
       var record = archive.get(id);
       if (record == null ||
@@ -453,14 +791,100 @@ class BrainController extends ChangeNotifier {
           record.data['sensitive'] == true) {
         return;
       }
+      if (record.kind == 'video') {
+        final context = record.data['context'] as String? ?? '';
+        final before = record.heads.map((r) => r.id).toList();
+        var folder = record.data['manual_folder'] == true
+            ? record.folder
+            : 'Видео';
+        if (context.isNotEmpty && record.data['manual_folder'] != true) {
+          folder =
+              folders
+                  .where((f) => context.toLowerCase().contains(f.toLowerCase()))
+                  .firstOrNull ??
+              'Видео';
+          if (ai.enabled) {
+            final answer = await ai.ask(
+              'Выбери ровно одну папку для пояснения владельца к видео. Самого видео у тебя нет; не делай выводов о его содержимом сверх пояснения. Новые явные routing_rules_newest_first важнее старых папок, при нескольких подходящих выбирай первое. Используй существующее название, когда оно подходит. Верни только folder.',
+              {
+                'context': safeText(context),
+                'existing_folders': folders,
+                'routing_rules_newest_first': routingRules,
+              },
+              {
+                'type': 'object',
+                'additionalProperties': false,
+                'required': ['folder'],
+                'properties': {
+                  'folder': {'type': 'string'},
+                },
+              },
+              cap: 200,
+            );
+            if (answer['folder'] is! String) {
+              throw AiFailure('Не удалось выбрать папку по пояснению.');
+            }
+            folder = canonicalFolder(answer['folder'] as String);
+          }
+        }
+        final live = archive.get(id);
+        if (clearing ||
+            generation != _generation ||
+            live == null ||
+            live.deleted ||
+            live.heads.map((r) => r.id).join() != before.join()) {
+          return;
+        }
+        if (ruleStamp != _ruleStamp) {
+          _again.add(id);
+          return;
+        }
+        await archive.save(
+          {
+            ...record.data,
+            'folder': folder,
+            'summary': context.isEmpty ? 'Сохранённое видео.' : context,
+            'text': context,
+            'analysis_state': 'done',
+            'reading_note': context.isEmpty
+                ? 'Видео сохранено по формату без расхода Gemini.'
+                : 'Само видео не отправляется в Gemini. Для выбора папки используется только твоё текстовое пояснение.',
+          },
+          recordId: id,
+          expectedHeads: before,
+        );
+        kickSync();
+        return;
+      }
       final before = record.heads.map((r) => r.id).toList();
+      final extensionFolder = _rule(
+        record.data['filename'] as String? ?? '',
+        record.data['context'] as String? ?? '',
+      );
+      if (extensionFolder != null) {
+        await archive.save(
+          {
+            ...record.data,
+            'folder': record.data['manual_folder'] == true
+                ? record.folder
+                : extensionFolder,
+            'analysis_state': 'done',
+            'reading_note': 'Применено правило формата без расхода Gemini.',
+          },
+          recordId: id,
+          expectedHeads: before,
+        );
+        kickSync();
+        return;
+      }
       final defaultFolder =
           _rule(
             record.data['filename'] as String? ?? '',
             record.data['context'] as String? ?? '',
           ) ??
           fallbackFolder(record.data['filename'] as String? ?? '');
-      if ((record.data['context'] as String? ?? '').isEmpty &&
+      if (routingRules.isEmpty &&
+          (record.data['context'] as String? ?? '').isEmpty &&
           ['Музыка', 'Видео', 'ZIP'].contains(defaultFolder)) {
         String text = '';
         if (defaultFolder == 'ZIP' &&
@@ -565,7 +989,18 @@ class BrainController extends ChangeNotifier {
         );
         return;
       }
-      final answer = await ai.analyze(record.data, prepared, folders, examples);
+      final answer = await ai.analyze(
+        record.data,
+        prepared,
+        folders,
+        examples,
+        rules: routingRules,
+      );
+      if (clearing || generation != _generation) return;
+      if (ruleStamp != _ruleStamp) {
+        _again.add(id);
+        return;
+      }
       final live = archive.get(id);
       if (live == null ||
           live.deleted ||
@@ -616,7 +1051,11 @@ class BrainController extends ChangeNotifier {
       kickSync();
     } catch (e) {
       final record = archive.get(id);
-      if (record != null && !record.deleted && !record.conflict) {
+      if (!clearing &&
+          generation == _generation &&
+          record != null &&
+          !record.deleted &&
+          !record.conflict) {
         try {
           await archive.save(
             {
@@ -658,6 +1097,11 @@ class BrainController extends ChangeNotifier {
       expectedHeads: record.heads.map((r) => r.id).toList(),
     );
     schedule(next.id);
+    if (record.kind == 'video') {
+      kickSync();
+      changed();
+      return;
+    }
     // Bounded broad reconsideration: same formats plus related text, never a mass
     // reclassification of manual choices or secret records.
     final words = context
@@ -917,28 +1361,48 @@ class BrainController extends ChangeNotifier {
   });
   Future<Uint8List?> preview(ArchiveRecord record) {
     final hash = record.blob?['hash'] as String?;
-    if (hash == null || record.kind != 'photo') return Future.value(null);
-    if (_previews.length > 40) _previews.remove(_previews.keys.first);
-    return _previews.putIfAbsent(hash, () async {
-      File? clear;
-      try {
-        if (!await archive.hasBlob(record.blob!)) return null;
-        clear = await archive.materialize(
-          record.blob!,
-          temporary,
-          record.data['filename'] as String? ?? 'photo',
-        );
-        final prepared = await prepareFile(
-          clear,
-          record.data['filename'] as String? ?? 'photo.jpg',
-        );
-        return prepared.images.firstOrNull;
-      } catch (_) {
-        return null;
-      } finally {
-        if (clear != null && await clear.exists()) await clear.delete();
-      }
-    });
+    if (hash == null || clearing) return Future.value(null);
+    if (_previews.length > 60) _previews.remove(_previews.keys.first);
+    final owner = archive, generation = _generation;
+    return _previews.putIfAbsent(
+      hash,
+      () => _previewJobs.run(() async {
+        if (generation != _generation || clearing) return null;
+        File? clear;
+        try {
+          final cached = File(
+            p.join(owner.directory.path, 'previews', '$hash.enc'),
+          );
+          if (await cached.exists()) {
+            return await owner.cipher.open(
+              await cached.readAsBytes(),
+              'preview:$hash',
+            );
+          }
+          if (!await owner.hasBlob(record.blob!)) return null;
+          clear = await owner.materialize(
+            record.blob!,
+            temporary,
+            record.data['filename'] as String? ?? record.title,
+          );
+          final bytes = await localThumbnail(
+            clear,
+            record.data['filename'] as String? ?? record.title,
+          );
+          if (bytes != null && generation == _generation && !clearing) {
+            await atomicWrite(
+              cached,
+              await owner.cipher.seal(bytes, 'preview:$hash'),
+            );
+          }
+          return bytes;
+        } catch (_) {
+          return null;
+        } finally {
+          if (clear != null && await clear.exists()) await clear.delete();
+        }
+      }),
+    );
   }
 
   Future<File> original(ArchiveRecord record) async {
@@ -991,6 +1455,7 @@ class BrainController extends ChangeNotifier {
         changed();
       });
   void resume() {
+    if (clearing) return;
     paused = false;
     _pump();
     kickSync();

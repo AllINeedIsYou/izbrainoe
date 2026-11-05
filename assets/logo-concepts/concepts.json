@@ -1,0 +1,52 @@
+[
+  {
+    "number": 1,
+    "name": "Искра",
+    "file": "logo-01.svg"
+  },
+  {
+    "number": 2,
+    "name": "В закладки",
+    "file": "logo-02.svg"
+  },
+  {
+    "number": 3,
+    "name": "Слои",
+    "file": "logo-03.svg"
+  },
+  {
+    "number": 4,
+    "name": "Умная яма",
+    "file": "logo-04.svg"
+  },
+  {
+    "number": 5,
+    "name": "Нейрон",
+    "file": "logo-05.svg"
+  },
+  {
+    "number": 6,
+    "name": "Двойная память",
+    "file": "logo-06.svg"
+  },
+  {
+    "number": 7,
+    "name": "Фокус",
+    "file": "logo-07.svg"
+  },
+  {
+    "number": 8,
+    "name": "Сердце кода",
+    "file": "logo-08.svg"
+  },
+  {
+    "number": 9,
+    "name": "Память",
+    "file": "logo-09.svg"
+  },
+  {
+    "number": 10,
+    "name": "Бесконечность",
+    "file": "logo-10.svg"
+  }
+]
